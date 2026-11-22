@@ -344,6 +344,49 @@ function mountAnalysis(root, refDate, focusDate) {
   root.querySelectorAll('.an-sort button').forEach(b => b.onclick = () => { ui.anSort = b.dataset.s; lsSet('vfc-rotation:anSort', ui.anSort); root.querySelectorAll('.an-sort button').forEach(x => x.classList.toggle('on', x === b)); draw(); });
   root.querySelector('.an-q').oninput = e => { ui.anQ = e.target.value.trim(); draw(); };
 }
+function openMemberAnalysis(id) {
+  const m = member(id); if (!m) return;
+  const today = todayISO(), ref = addDays(today, 1);
+  const res = analyze(ref), a = res.data[id] || { last: null, m1: { n: 0, c: {}, ab: 0 }, m3: { n: 0, c: {}, ab: 0 } };
+  // 시스템에 저장된 전체 기록
+  const all = { n: 0, c: {}, ab: 0 }, hist = [];
+  Object.values(D().rotations).sort((x, y) => y.date.localeCompare(x.date)).forEach(r => {
+    const ps = [...new Set(SLOTS.filter(s2 => r[s2.k] === id).map(s2 => POS_NAME[s2.k]))];
+    const ab = (r.absent || []).includes(id), sp = (r.spare || []).includes(id);
+    if (!ps.length && !ab && !sp) return;
+    const future = r.date > today;
+    if (!future) { ps.forEach(p => { all.c[p] = (all.c[p] || 0) + 1; all.n++; }); if (ab) all.ab++; }
+    hist.push({ date: r.date, ps, ab, sp, future });
+  });
+  const past = hist.filter(h => !h.future && h.ps.length);
+  const first = past.at(-1)?.date, served = past.length;
+  const topPos = POS_ORDER.filter(p => all.c[p]).sort((x, y) => all.c[y] - all.c[x])[0];
+  const byMonth = {}; hist.forEach(h => (byMonth[ymOf(h.date)] ||= []).push(h));
+  openSheet({
+    title: `${esc(m.name)} 로테이션 분석`, wide: true,
+    body: `<div class="muted small" style="margin:-4px 2px 12px">${m.age ? `${esc(m.age)}또래 · ` : ''}${m.note ? `${esc(m.note)} · ` : ''}${m.active ? '활동' : '비활동'} · ${dotDate(today)} 기준</div>
+      <div class="stats" style="grid-template-columns:repeat(4,1fr)">
+        <div class="card stat"><b>${served}</b><span>전체 출석</span></div>
+        <div class="card stat"><b>${topPos || '-'}</b><span>최다 포지션</span></div>
+        <div class="card stat"><b style="color:${all.ab ? 'var(--danger)' : 'inherit'}">${all.ab}</b><span>불참</span></div>
+        <div class="card stat"><b style="font-size:16px;line-height:1.5">${first ? dotDate(first).slice(2) : '-'}</b><span>첫 기록</span></div>
+      </div>
+      <div class="an-legend">${POS_ORDER.map(p => `<span><b style="background:${POS_COLOR[p]}"></b>${p}</span>`).join('')}</div>
+      <div class="card an-card">
+        <div class="an-head"><b>포지션 비중</b><div class="grow"></div>${a.last ? `<span class="an-last">최근 <b>${a.last.pos.join('·')}</b> <span class="muted">${dotDate(a.last.date).slice(5)} · ${agoText(a.last.date, today)}</span></span>` : '<span class="muted small">최근 기록 없음</span>'}</div>
+        ${windowHTML('1개월', a.m1, '0회')}
+        ${windowHTML('3개월', a.m3, '0회')}
+        ${windowHTML('전체', all, '0회')}
+      </div>
+      <div class="section-title" style="margin-top:18px"><span>전체 기록 · ${hist.length}건</span></div>
+      ${hist.length ? Object.entries(byMonth).map(([ym, hs]) => `<div class="grp">${ym.replace('-', '.')} · ${hs.filter(h => h.ps.length).length}회</div>
+        <div class="card list">${hs.map(h => `<div class="li" style="padding:10px 14px;gap:10px">
+          <b style="width:96px;flex:none;font-size:14px;white-space:nowrap">${dotDate(h.date).slice(5)} <span class="muted" style="font-weight:600">(${dow(h.date)})</span></b>
+          <div class="grow" style="display:flex;flex-wrap:wrap;gap:5px">${h.ps.map(p => `<span class="chip" style="background:${POS_COLOR[p]}22;color:${POS_COLOR[p]}">${p}</span>`).join('')}${h.sp ? '<span class="chip spare">예비/휴가</span>' : ''}${h.ab ? '<span class="chip absent">불참</span>' : ''}</div>
+          ${h.future ? '<span class="badge">예정</span>' : ''}
+        </div>`).join('')}</div>`).join('') : '<div class="card empty">아직 기록이 없어요</div>'}`,
+  });
+}
 function openAnalysis(refDate, focusDate) {
   const el = openSheet({ title: '팀원 로테이션 분석', wide: true, body: '<div class="an-root"></div>' });
   mountAnalysis(el.querySelector('.an-root'), refDate, focusDate);
@@ -859,7 +902,11 @@ function renderMembers() {
             <div class="sub">${m.phone ? esc(m.phone) : '<span style="color:var(--mute)">연락처 없음</span>'} · 올해 ${yearCounts[m.id]?.n || 0}회 ${(m.roles || []).map(t => `<span class="chip tag">${esc(t)}</span>`).join('')}</div>
           </div>
         </button>
-        ${m.phone ? `<a class="callbtn" href="tel:${esc(m.phone.replace(/\D/g, ''))}" aria-label="전화">${I.phone}</a>` : ''}
+        <div class="mem-acts">
+          <button class="btn sm" data-act="openMember" data-v="${m.id}">${can.editMembers() ? '수정' : '정보'}</button>
+          <button class="btn sm" data-act="memberAn" data-v="${m.id}">${I.chart}분석</button>
+          ${m.phone ? `<a class="callbtn" href="tel:${esc(m.phone.replace(/\D/g, ''))}" aria-label="전화">${I.phone}</a>` : ''}
+        </div>
       </div>`).join('') || '<div class="empty">해당하는 팀원이 없어요</div>'}</div>`;
 }
 function openMemberEditor(id) {
@@ -1126,6 +1173,7 @@ const ACT = {
   copyText: () => copyText(weekText(D().rotations[ui.weekDate]), '텍스트를 복사했어요. 카톡에 붙여넣기 하세요'),
   memf: v => { ui.memFilter = v; saveUI(); rerender(); },
   openMember: v => openMemberEditor(v),
+  memberAn: v => openMemberAnalysis(v),
   addMember: () => openMemberEditor(null),
   me: () => { ui.tab = 'settings'; saveUI(); rerender(); },
   changePw: () => openChangePw(),

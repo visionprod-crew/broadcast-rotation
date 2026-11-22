@@ -6,9 +6,9 @@
 <meta name="theme-color" content="#1c1b1f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="SLS 방송팀">
-<link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png?v=11">
-<link rel="apple-touch-icon" sizes="180x180" href="icons/icon-180.png?v=11">
-<link rel="manifest" href="manifest.webmanifest?v=11">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png?v=12">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/icon-180.png?v=12">
+<link rel="manifest" href="manifest.webmanifest?v=12">
 <title>SLS 방송팀 관리 시스템</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
 <style>
@@ -164,6 +164,9 @@ table.rt td.ab{color:var(--danger);font-size:12px;white-space:normal}
 .mem .age{font-size:12px;color:var(--sub);font-weight:700}
 .mem .sub{font-size:12.5px;color:var(--sub);margin-top:2px;display:flex;gap:4px;flex-wrap:wrap;align-items:center}
 .mem.off .nm>span:first-child{text-decoration:line-through;color:var(--mute)}
+.mem-acts{display:flex;align-items:center;gap:6px;flex:none}
+.mem-acts .btn svg{width:15px;height:15px}
+@media(max-width:480px){.mem{flex-wrap:wrap}.mem-acts{width:100%;padding-left:52px}.mem-acts .btn{flex:1}}
 .callbtn{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:var(--ok-soft);color:var(--ok);flex:none}
 .callbtn svg{width:18px;height:18px}
 .tagpick{display:flex;flex-wrap:wrap;gap:6px}
@@ -257,8 +260,8 @@ table.rt td.ab{color:var(--danger);font-size:12px;white-space:normal}
 <body>
 <div id="app"></div>
 <div id="sheets"></div>
-<script src="config.js?v=11"></script>
-<script src="seed.js?v=11"></script>
-<script type="module" src="app.js?v=11"></script>
+<script src="config.js?v=12"></script>
+<script src="seed.js?v=12"></script>
+<script type="module" src="app.js?v=12"></script>
 </body>
 </html>
