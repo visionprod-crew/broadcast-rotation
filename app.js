@@ -457,7 +457,7 @@ function renderLogin() {
       <label class="f">비밀번호</label><input class="input" type="password" name="pw" autocomplete="current-password" required>
       <div class="err" id="err">${err}</div>
       <button class="btn primary block" style="height:50px;margin-top:6px">로그인</button>
-      ${store.mode === 'cloud' ? `<button type="button" class="btn ghost block" style="margin-top:8px" data-setup>처음 설정: 메인 관리자 계정 만들기</button>` : ''}
+      ${store.mode === 'cloud' && location.hash === '#setup' ? `<button type="button" class="btn ghost block" style="margin-top:8px" data-setup>메인 관리자 계정 만들기</button>` : ''}
     </form>
     <p class="muted small" style="margin-top:18px">${store.mode === 'local' ? '로컬 모드: 이 기기 브라우저에만 저장됩니다.' : '계정은 메인 관리자가 만들어 드려요.'}</p>
   </div></div>`;
