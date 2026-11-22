@@ -1,0 +1,21 @@
+rules_version = '2';
+// 방송팀 로테이션 — Firestore 보안 규칙
+// ⚠️ 아래 OWNER 이메일은 config.js 의  ownerId@loginDomain  과 같아야 합니다. (기본: admin@vfc-rotation.app)
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isOwner() { return signedIn() && request.auth.token.email == 'admin@vfc-rotation.app'; }
+    function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function hasProfile() { return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)); }
+    function isStaff() { return isOwner() || (hasProfile() && profile().role in ['leader', 'subleader']); }
+    function isLeader() { return isOwner() || (hasProfile() && profile().role == 'leader'); }
+
+    match /users/{uid} {
+      allow read: if isStaff() && (isOwner() || request.auth.uid == uid);
+      allow write: if isOwner();
+    }
+    match /rotations/{date} { allow read, write: if isStaff(); }   // 팀장·부팀장 편집
+    match /members/{id}     { allow read: if isStaff(); allow write: if isLeader(); } // 팀장 이상 편집
+    match /settings/{id}    { allow read: if isStaff(); allow write: if isOwner(); }
+  }
+}
