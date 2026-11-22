@@ -888,7 +888,7 @@ function renderSettings() {
     ${can.owner() ? `
     <div class="section-title">계정 관리 <span class="muted small" style="font-weight:600">메인 관리자 전용</span></div>
     <div class="card list" id="userList"><div class="li muted">불러오는 중…</div></div>
-    <button class="btn block" style="margin-top:8px" data-act="addUser">${I.plus}팀장 · 부팀장 계정 만들기</button>
+    <div class="row" style="margin-top:8px"><button class="btn grow" data-act="addUser">${I.plus}계정 만들기</button><button class="btn grow" data-act="bulkUsers">${I.people}명단에서 한 번에 만들기</button></div>
     <div class="muted small" style="margin:8px 4px">권한 — <b>팀장</b>: 로테이션·팀원 편집 / <b>부팀장</b>: 로테이션 편집, 팀원 보기</div>
     <div class="section-title">공지 이미지 문구</div>
     <div class="card list">${li('editTexts', I.pen, '팀 이름 · 카드 제목 · 하단 문구', `${esc(st.teamName)} / ${esc(st.cardTitle)}${st.footer ? ' / ' + esc(st.footer) : ''}`)}</div>` : ''}
@@ -912,6 +912,62 @@ async function loadUserList() {
     box.innerHTML = users.map(u => `<div class="li"><span class="avatar" style="width:34px;height:34px;border-radius:10px">${esc((u.name || '?')[0])}</span><div class="grow"><b>${esc(u.name)}</b> <span class="role ${u.role}">${ROLES[u.role]}</span><div class="d">아이디 ${esc(u.loginId)}</div></div>
       ${u.role !== 'owner' ? `${store.mode === 'local' ? `<button class="btn sm ghost" data-act="resetUserPw" data-v="${u.uid}">비번 초기화</button>` : ''}<button class="btn sm danger" data-act="delUser" data-v="${u.uid}" data-n="${esc(u.name)}">삭제</button>` : ''}</div>`).join('');
   } catch (e) { box.innerHTML = `<div class="li muted">계정 목록을 불러오지 못했어요 (${esc(e.message)})</div>`; }
+}
+// 한글 이름 → 아이디 기본값 (국어의 로마자 표기 간이 변환)
+function romanize(name) {
+  const L = ['g','kk','n','d','tt','r','m','b','pp','s','ss','','j','jj','ch','k','t','p','h'];
+  const V = ['a','ae','ya','yae','eo','e','yeo','ye','o','wa','wae','oe','yo','u','wo','we','wi','yu','eu','ui','i'];
+  const T = ['','k','k','k','n','n','n','t','l','k','m','l','l','l','p','l','m','p','p','t','t','ng','t','t','k','t','p','t'];
+  const SUR = { 김: 'kim', 이: 'lee', 박: 'park', 정: 'jung', 최: 'choi', 허: 'heo', 전: 'jeon', 민: 'min', 황: 'hwang', 나: 'na', 양: 'yang', 조: 'cho', 강: 'kang', 윤: 'yoon', 장: 'jang', 임: 'lim', 한: 'han', 오: 'oh', 신: 'shin', 서: 'seo', 권: 'kwon', 송: 'song', 류: 'ryu', 유: 'yoo', 홍: 'hong', 문: 'moon', 손: 'son', 배: 'bae', 백: 'baek', 노: 'noh', 하: 'ha', 곽: 'kwak', 성: 'sung', 차: 'cha', 주: 'joo', 우: 'woo', 구: 'koo', 고: 'ko', 남: 'nam', 안: 'ahn' };
+  const base = name.replace(/\s.*$/, '');
+  let out = base.length >= 2 && SUR[base[0]] ? SUR[base[0]] : '';
+  for (const ch of out ? base.slice(1) : base) {
+    const c = ch.charCodeAt(0) - 0xac00;
+    if (c < 0 || c > 11171) { if (/[a-z0-9]/i.test(ch)) out += ch.toLowerCase(); continue; }
+    out += L[Math.floor(c / 588)] + V[Math.floor((c % 588) / 28)] + T[c % 28];
+  }
+  return out.slice(0, 20);
+}
+async function openBulkUsers() {
+  let existing = [];
+  try { existing = await store.listUsers(); } catch {}
+  const hasName = new Set(existing.map(u => u.name)), hasId = new Set(existing.map(u => u.loginId));
+  const ms = membersSorted().filter(m => m.active);
+  const defRole = m => /부팀장/.test(m.note || '') ? 'subleader' : 'leader';
+  const defOn = m => /팀장|부팀장/.test(m.note || '') || /강도사|전도사|목사/.test(m.name);
+  const el = openSheet({
+    title: '명단에서 계정 한 번에 만들기', wide: true,
+    body: `<p class="muted small" style="margin:-4px 2px 12px">체크한 사람의 계정을 같은 초기 비밀번호로 만들어요. 아이디는 바꿀 수 있어요.</p>
+      <div class="card list">${ms.map(m => { const done = hasName.has(m.name); return `<div class="li" data-mid="${m.id}" style="gap:10px;${done ? 'opacity:.5' : ''}">
+        <input type="checkbox" class="bu-on" ${!done && defOn(m) ? 'checked' : ''} ${done ? 'disabled' : ''} style="width:20px;height:20px;flex:none">
+        <div style="width:84px;flex:none;font-size:14px"><b>${esc(m.name)}</b><div class="d">${done ? '계정 있음' : esc(m.note || '')}</div></div>
+        <input class="input bu-id" style="height:38px;flex:1;min-width:0;padding:0 8px;font-size:13.5px" value="${esc(romanize(m.name))}" autocapitalize="off" ${done ? 'disabled' : ''}>
+        <select class="input bu-role" style="height:38px;width:78px;flex:none;padding:0 6px;font-size:13.5px" ${done ? 'disabled' : ''}><option value="leader" ${defRole(m) === 'leader' ? 'selected' : ''}>팀장</option><option value="subleader" ${defRole(m) === 'subleader' ? 'selected' : ''}>부팀장</option></select>
+      </div>`; }).join('')}</div>
+      <label class="f">초기 비밀번호 (6자 이상, 모두 동일)</label><input class="input" id="buPw" type="text" autocomplete="off" placeholder="예: 123456">
+      <div class="err" id="buErr"></div><div id="buLog" class="small muted"></div>`,
+    foot: `<button class="btn grow" data-close>닫기</button><button class="btn primary grow" id="buGo">체크한 계정 만들기</button>`,
+  });
+  $('#buGo', el).onclick = async () => {
+    const err = $('#buErr', el), log = $('#buLog', el); err.textContent = ''; log.innerHTML = '';
+    const pw = $('#buPw', el).value;
+    if (pw.length < 6) return err.textContent = '비밀번호는 6자 이상이어야 해요';
+    const rows = [...el.querySelectorAll('[data-mid]')].filter(r => r.querySelector('.bu-on').checked).map(r => ({ name: member(r.dataset.mid).name, loginId: r.querySelector('.bu-id').value.trim().toLowerCase(), role: r.querySelector('.bu-role').value }));
+    if (!rows.length) return err.textContent = '만들 사람을 체크해 주세요';
+    const bad = rows.find(r => !/^[a-z0-9._-]{3,20}$/.test(r.loginId) || r.loginId === OWNER_ID || hasId.has(r.loginId));
+    if (bad) return err.textContent = `${bad.name}: 아이디는 영문 소문자·숫자 3~20자이고, 이미 쓰는 아이디와 겹치면 안 돼요`;
+    if (new Set(rows.map(r => r.loginId)).size !== rows.length) return err.textContent = '아이디가 서로 겹쳐요';
+    $('#buGo', el).disabled = true;
+    const ok = [];
+    for (const r of rows) {
+      try { await store.createUser({ ...r, pw }); ok.push(r); log.innerHTML += `<div>✓ ${esc(r.name)} · ${esc(r.loginId)} · ${ROLES[r.role]}</div>`; }
+      catch (e) { log.innerHTML += `<div style="color:var(--danger)">✕ ${esc(r.name)}: ${esc(e.message)}</div>`; }
+    }
+    $('#buGo', el).disabled = false; loadUserList();
+    toast(`${ok.length}개 계정을 만들었어요`);
+    if (ok.length) log.innerHTML += `<div style="margin-top:8px"><button class="btn sm" id="buCopy">${I.copy}아이디 목록 복사</button></div>`;
+    $('#buCopy', el)?.addEventListener('click', () => copyText(`[방송팀 로테이션 계정]\n${location.origin + location.pathname}\n` + ok.map(r => `${r.name} (${ROLES[r.role]}) 아이디: ${r.loginId}`).join('\n') + `\n초기 비밀번호는 따로 안내드려요. 로그인 후 설정 > 비밀번호 변경에서 바꿔주세요.`, '아이디 목록을 복사했어요'));
+  };
 }
 function openAddUser() {
   const el = openSheet({
@@ -1042,6 +1098,7 @@ const ACT = {
   changePw: () => openChangePw(),
   logout: async () => { if (!await confirmBox('로그아웃할까요?', '로그아웃')) return; await store.logout(); rerender(); },
   addUser: () => openAddUser(),
+  bulkUsers: () => openBulkUsers(),
   delUser: async (v, el) => { if (!await confirmBox(`${el.dataset.n}님의 계정을 삭제할까요?\n삭제하면 더 이상 로그인해서 볼 수 없어요.`, '삭제', true)) return; await store.deleteUser(v); toast('계정을 삭제했어요'); loadUserList(); },
   resetUserPw: async v => {
     const el = openSheet({ title: '비밀번호 초기화', body: `<label class="f">새 비밀번호 (6자 이상)</label><input class="input" id="rp">`, foot: `<button class="btn grow" data-close>취소</button><button class="btn primary grow" id="rpGo">변경</button>` });
