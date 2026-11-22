@@ -1,4 +1,4 @@
-/* 3시 방송팀 로테이션 — app.js
+/* SLS 방송팀 관리 시스템 — app.js
  * 저장소: 로컬 모드(localStorage) 또는 Firebase 모드(로그인 + Firestore 실시간 공유)
  */
 const CFG = window.APP_CONFIG || {};
@@ -322,29 +322,48 @@ function memberAnalysisHTML(m, a, ref) {
     ${windowHTML('3개월', a?.m3 || { n: 0, c: {}, ab: 0 }, '0회')}
   </div>`;
 }
-function openAnalysis(refDate, focusDate) {
-  let sort = lsGet('vfc-rotation:anSort', 'rest'), q = '';
+function mountAnalysis(root, refDate, focusDate) {
   const res = analyze(refDate);
-  const el = openSheet({
-    title: '팀원 로테이션 분석', wide: true,
-    body: `<div class="muted small" style="margin:-4px 2px 10px">${focusDate ? `${dotDate(focusDate)} 편성 기준 · ` : ''}${dotDate(refDate)} 이전 기록 · 1개월 ${dotDate(res.m1From).slice(5)}~ · 3개월 ${dotDate(res.m3From).slice(5)}~</div>
-      <div class="searchbox">${I.search}<input class="input" id="anq" placeholder="이름 검색"></div>
-      <div class="seg" id="anSort" style="margin-bottom:10px">${[['rest', '오래 쉰 순'], ['many', '많이 한 순'], ['recent', '최근 순'], ['name', '명단 순']].map(([k, l]) => `<button class="${sort === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
-      <div class="an-legend">${POS_ORDER.map(p => `<span><b style="background:${POS_COLOR[p]}"></b>${p}</span>`).join('')}</div>
-      <div id="anList"></div>`,
-  });
+  ui.anSort ||= lsGet('vfc-rotation:anSort', 'rest'); ui.anQ ||= '';
+  root.innerHTML = `<div class="muted small" style="margin:0 2px 10px">${focusDate ? `<b style="color:var(--accent)">${dotDate(focusDate)} 편성 기준</b> · ` : ''}${dotDate(refDate)} 이전 기록 · 1개월 ${dotDate(res.m1From).slice(5)}~ · 3개월 ${dotDate(res.m3From).slice(5)}~</div>
+    <div class="searchbox">${I.search}<input class="input an-q" placeholder="이름 검색" value="${esc(ui.anQ)}"></div>
+    <div class="seg an-sort" style="margin-bottom:10px">${[['rest', '오래 쉰 순'], ['many', '많이 한 순'], ['recent', '최근 순'], ['name', '명단 순']].map(([k, l]) => `<button class="${ui.anSort === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
+    <div class="an-legend">${POS_ORDER.map(p => `<span><b style="background:${POS_COLOR[p]}"></b>${p}</span>`).join('')}</div>
+    <div class="an-list"></div>`;
   const draw = () => {
+    const q = ui.anQ, sort = ui.anSort, A = id => res.data[id];
     let ms = membersSorted().filter(m => (m.active || res.data[m.id]?.m3.n) && (!q || m.name.includes(q)));
-    const A = id => res.data[id];
     if (sort === 'rest') ms.sort((a, b) => (A(a.id)?.last?.date || '0').localeCompare(A(b.id)?.last?.date || '0'));
     if (sort === 'recent') ms.sort((a, b) => (A(b.id)?.last?.date || '0').localeCompare(A(a.id)?.last?.date || '0'));
     if (sort === 'many') ms.sort((a, b) => (A(b.id)?.m3.n || 0) - (A(a.id)?.m3.n || 0));
-    $('#anList', el).innerHTML = ms.map(m => memberAnalysisHTML(m, A(m.id), refDate)).join('') || '<div class="empty">해당하는 팀원이 없어요</div>';
+    root.querySelector('.an-list').innerHTML = ms.map(m => memberAnalysisHTML(m, A(m.id), refDate)).join('') || '<div class="empty">해당하는 팀원이 없어요</div>';
   };
   draw();
-  el.querySelectorAll('#anSort button').forEach(b => b.onclick = () => { sort = b.dataset.s; lsSet('vfc-rotation:anSort', sort); el.querySelectorAll('#anSort button').forEach(x => x.classList.toggle('on', x === b)); draw(); });
-  $('#anq', el).oninput = e => { q = e.target.value.trim(); draw(); };
+  root.querySelectorAll('.an-sort button').forEach(b => b.onclick = () => { ui.anSort = b.dataset.s; lsSet('vfc-rotation:anSort', ui.anSort); root.querySelectorAll('.an-sort button').forEach(x => x.classList.toggle('on', x === b)); draw(); });
+  root.querySelector('.an-q').oninput = e => { ui.anQ = e.target.value.trim(); draw(); };
 }
+function openAnalysis(refDate, focusDate) {
+  const el = openSheet({ title: '팀원 로테이션 분석', wide: true, body: '<div class="an-root"></div>' });
+  mountAnalysis(el.querySelector('.an-root'), refDate, focusDate);
+}
+function defaultAnalysisRef() {
+  const up = upcomingSunday(), last = sundaysOf(ui.ym).at(-1);
+  return ymOf(up) === ui.ym ? addDays(up, 1) : last ? addDays(last, 1) : addDays(todayISO(), 1);
+}
+// PC(넓은 화면)에서는 월별 화면 오른쪽에 분석 패널 고정
+const WIDE = window.matchMedia('(min-width: 1100px)');
+function renderSide() {
+  let side = $('#side');
+  const show = store?.user && WIDE.matches && ui.tab === 'month' && !(store.mode === 'cloud' && !store.ready);
+  document.body.classList.toggle('side-on', !!show);
+  if (!show) { side?.remove(); return; }
+  if (!side) { side = document.createElement('aside'); side.id = 'side'; side.innerHTML = '<div class="side-h"><b>팀원 로테이션 분석</b><span class="muted small">최근 · 1개월 · 3개월</span></div><div class="side-b"></div>'; document.body.appendChild(side); }
+  const body = side.querySelector('.side-b'), y = body.scrollTop, hadFocus = document.activeElement?.classList.contains('an-q');
+  mountAnalysis(body, ui.sideFocus || defaultAnalysisRef(), ui.sideFocus);
+  body.scrollTop = y;
+  if (hadFocus) { const i = body.querySelector('.an-q'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+}
+WIDE.addEventListener?.('change', () => store?.user && rerender());
 
 /* ───────── 아이콘 ───────── */
 const I = {
@@ -382,8 +401,8 @@ function toast(msg) {
   toastT = setTimeout(() => t.remove(), 2600);
 }
 const sheetStack = [];
-function openSheet({ title, body, foot = '', onMount, wide }) {
-  const el = document.createElement('div'); el.className = 'sheet';
+function openSheet({ title, body, foot = '', onMount, onClose, wide }) {
+  const el = document.createElement('div'); el.className = 'sheet'; el._onClose = onClose;
   el.innerHTML = `<div class="panel"${wide ? ' style="max-width:760px"' : ''}><div class="ph"><h2>${title}</h2><button class="iconbtn" data-close>${I.x}</button></div><div class="pb">${body}</div>${foot ? `<div class="pf">${foot}</div>` : ''}</div>`;
   el.addEventListener('click', e => { if (e.target === el || e.target.closest('[data-close]')) closeSheet(el); });
   $('#sheets').appendChild(el); sheetStack.push(el);
@@ -391,7 +410,7 @@ function openSheet({ title, body, foot = '', onMount, wide }) {
   onMount?.(el); return el;
 }
 function closeSheet(el = sheetStack.at(-1)) {
-  if (!el) return; el.remove(); sheetStack.splice(sheetStack.indexOf(el), 1);
+  if (!el || !el.isConnected) return; el.remove(); sheetStack.splice(sheetStack.indexOf(el), 1); el._onClose?.();
   if (!sheetStack.length) document.body.style.overflow = '';
 }
 function confirmBox(msg, okLabel = '확인', danger = false) {
@@ -407,12 +426,12 @@ function confirmBox(msg, okLabel = '확인', danger = false) {
 /* ───────── 렌더 ───────── */
 function rerender() {
   const app = $('#app');
-  if (!store.user) { app.innerHTML = renderLogin(); bindLogin(); return; }
+  if (!store.user) { app.innerHTML = renderLogin(); bindLogin(); renderSide(); return; }
   const st = D().settings;
   const roleCls = store.user.role;
   app.innerHTML = `
     <header class="topbar">
-      <h1><small>${esc(st.teamName)}</small>로테이션 관리</h1>
+      <h1><small>${esc(st.teamName)}</small>SLS 방송팀 관리 시스템</h1>
       <button class="userchip" data-act="me"><span class="avatar">${esc(store.user.name[0] || 'U')}</span>${esc(store.user.name)}${store.user.name !== ROLES[roleCls] ? `<span class="role ${roleCls}">${ROLES[roleCls]}</span>` : ''}</button>
     </header>
     ${store.mode === 'local' ? `<div class="modebar"><span class="dot"></span>로컬 모드 · 이 기기에만 저장돼요</div>` : `<div class="modebar"><span class="dot on"></span>클라우드 연결됨 · 실시간 공유 중</div>`}
@@ -423,6 +442,7 @@ function rerender() {
     ${ui.tab === 'members' && can.editMembers() ? `<button class="fab" data-act="addMember" aria-label="팀원 추가">${I.plus}</button>` : ''}`;
   if (ui.tab === 'week') mountWeek();
   if (ui.tab === 'settings' && can.owner()) loadUserList();
+  renderSide();
 }
 function renderView() {
   if (store.mode === 'cloud' && !store.ready) return `<div class="empty">데이터 불러오는 중…</div>`;
@@ -450,7 +470,7 @@ function renderLogin() {
   }
   return `<div class="login"><div class="box">
     <div class="brand">VISION FILM CREW</div>
-    <h1>방송팀 로테이션</h1>
+    <h1>SLS 방송팀 관리 시스템</h1>
     <p class="muted" style="margin:0 0 18px">${esc(D().settings.teamName)} 포지션 관리</p>
     <form id="loginForm">
       <label class="f">아이디</label><input class="input" name="id" autocapitalize="off" autocomplete="username" required>
@@ -509,7 +529,7 @@ function renderMonth() {
     <div class="row" style="margin-bottom:12px">
       <div class="seg"><button class="${ui.monthView === 'card' ? 'on' : ''}" data-act="mview" data-v="card">카드</button><button class="${ui.monthView === 'table' ? 'on' : ''}" data-act="mview" data-v="table">시트형 표</button></div>
       <div class="grow"></div>
-      <button class="btn sm ghost" data-act="analysis">${I.chart}분석</button>
+      <button class="btn sm ghost hide-wide" data-act="analysis">${I.chart}분석</button>
       ${can.editRotation() ? `<button class="btn sm" data-act="addDate">${I.plus}날짜 추가</button>` : ''}
     </div>`;
   if (can.editRotation() && missingSundays.length) {
@@ -517,7 +537,7 @@ function renderMonth() {
   }
   if (!rots.length) html += `<div class="card empty">이 달에는 아직 로테이션이 없어요</div>`;
   else if (ui.monthView === 'table') html += renderTable(rots);
-  else html += rots.map(r => renderSvc(r, r.date === nextDate, r.date < today)).join('');
+  else html += `<div class="svc-list">${rots.map(r => renderSvc(r, r.date === nextDate, r.date < today)).join('')}</div>`;
 
   if (rots.length) {
     const ms = membersSorted().filter(mm => mm.active || counts[mm.id]);
@@ -567,14 +587,15 @@ function openEditor(date, isNew = false) {
   openSheet({
     title: `${dotDate(date)} (${dow(date)}) 포지션`, body: '<div id="edBody"></div>',
     foot: `${!isNew ? `<button class="btn danger" data-act="delRot">삭제</button>` : ''}<button class="btn grow" data-close>취소</button><button class="btn primary grow" data-act="saveRot">저장</button>`,
-    onMount: el => { el.querySelector('[data-act="saveRot"]').onclick = saveDraft; el.querySelector('[data-act="delRot"]')?.addEventListener('click', delDraft); renderEditorBody(); },
+    onClose: () => { ui.sideFocus = null; renderSide(); },
+    onMount: el => { ui.sideFocus = date; renderSide(); el.querySelector('[data-act="saveRot"]').onclick = saveDraft; el.querySelector('[data-act="delRot"]')?.addEventListener('click', delDraft); renderEditorBody(); },
   });
 }
 function renderEditorBody() {
   const box = $('#edBody'); if (!box) return;
   const { msgs, bad } = issues(draft);
   box.innerHTML = `
-    <button class="btn block ghost" id="edAn" style="margin-bottom:10px">${I.chart}팀원 로테이션 분석 보기 (최근 · 1개월 · 3개월)</button>
+    <button class="btn block ghost hide-wide" id="edAn" style="margin-bottom:10px">${I.chart}팀원 로테이션 분석 보기 (최근 · 1개월 · 3개월)</button>
     ${SLOTS.map(s => { const id = draft[s.k]; return `<button class="slot ${id && bad.has(id) ? 'warn' : ''}" data-slot="${s.k}"><div class="lbl"><b>${s.cam}</b><i>${s.pos || (s.k === 'text' ? '자막' : '프로듀서')}${s.optional ? ' · 선택' : ''}</i></div><div class="v ${id ? '' : 'none'}">${id ? esc(nameOf(id)) : '선택 안 함'}</div><span class="chev">${I.chev}</span></button>`; }).join('')}
     ${MULTI.map(mm => { const ids = draft[mm.k] || []; return `<button class="slot" data-slot="${mm.k}"><div class="lbl"><b>${mm.label}</b><i>여러 명 선택</i></div><div class="v ${ids.length ? '' : 'none'}">${ids.length ? ids.map(id => `<span class="chip ${mm.k === 'absent' ? 'absent' : 'spare'}">${esc(nameOf(id))}</span>`).join('') : '없음'}</div><span class="chev">${I.chev}</span></button>`; }).join('')}
     <label class="f">메모 (선택)</label><input class="input" id="memo" placeholder="예: 성탄 특별예배, 장비 점검 등" value="${esc(draft.memo || '')}">
@@ -600,7 +621,7 @@ function openPicker(k) {
   const monthCounts = countsFor(rotationsOfMonth(ymOf(draft.date)).filter(r => r.date !== draft.date));
   const an = analyze(draft.date).data;
   const el = openSheet({
-    title, body: `<div class="row" style="margin-bottom:10px"><div class="searchbox grow" style="margin:0">${I.search}<input class="input" id="pq" placeholder="이름 검색"></div><button class="btn" id="pkAn">${I.chart}분석</button></div><div id="pl"></div>
+    title, body: `<div class="row" style="margin-bottom:10px"><div class="searchbox grow" style="margin:0">${I.search}<input class="input" id="pq" placeholder="이름 검색"></div><button class="btn hide-wide" id="pkAn">${I.chart}분석</button></div><div id="pl"></div>
       <div class="grp">용병</div>
       <div class="card" style="padding:12px">
         <div class="row"><input class="input grow" id="guestName" placeholder="용병 이름 입력" maxlength="20" enterkeyhint="done"><button class="btn primary" id="guestAdd">${multi ? '추가' : '선택'}</button></div>
@@ -910,7 +931,7 @@ function renderSettings() {
     <div class="card" style="padding:14px;font-size:13.5px">
       ${store.mode === 'local' ? `<b>로컬 모드</b><div class="muted" style="margin-top:4px">데이터와 계정이 이 기기 브라우저에만 저장돼요. 팀장·부팀장이 각자 폰에서 같은 데이터를 쓰려면 README의 <b>Firebase 연결</b>을 진행해 주세요.</div>` : `<b>클라우드 모드 (Firebase)</b><div class="muted" style="margin-top:4px">모든 기기에서 같은 데이터가 실시간으로 공유돼요.</div>`}
     </div>
-    <p class="muted small" style="text-align:center;margin:22px 0 4px">VISION FILM CREW · 방송팀 로테이션</p>`;
+    <p class="muted small" style="text-align:center;margin:22px 0 4px">VISION FILM CREW · SLS 방송팀 관리 시스템</p>`;
 }
 async function loadUserList() {
   const box = $('#userList'); if (!box) return;
@@ -958,7 +979,7 @@ async function openBulkUsers() {
     $('#buGo', el).disabled = false; loadUserList();
     toast(`${ok.length}개 계정을 만들었어요`);
     if (ok.length) log.innerHTML += `<div style="margin-top:8px"><button class="btn sm" id="buCopy">${I.copy}아이디 목록 복사</button></div>`;
-    $('#buCopy', el)?.addEventListener('click', () => copyText(`[방송팀 로테이션 계정]\n${location.origin + location.pathname}\n` + ok.map(r => `${r.name} (${ROLES[r.role]}) 아이디: ${r.loginId}`).join('\n') + `\n초기 비밀번호는 따로 안내드려요. 로그인 후 설정 > 비밀번호 변경에서 바꿔주세요.`, '아이디 목록을 복사했어요'));
+    $('#buCopy', el)?.addEventListener('click', () => copyText(`[SLS 방송팀 관리 시스템 계정]\n${location.origin + location.pathname}\n` + ok.map(r => `${r.name} (${ROLES[r.role]}) 아이디: ${r.loginId}`).join('\n') + `\n초기 비밀번호는 따로 안내드려요. 로그인 후 설정 > 비밀번호 변경에서 바꿔주세요.`, '아이디 목록을 복사했어요'));
   };
 }
 function openAddUser() {
@@ -1064,7 +1085,7 @@ const ACT = {
   mview: v => { ui.monthView = v; saveUI(); rerender(); },
   toggleCounts: () => { ui.showCounts = !ui.showCounts; rerender(); },
   edit: v => openEditor(v),
-  analysis: () => { const up = upcomingSunday(); const ref = ymOf(up) === ui.ym ? addDays(up, 1) : (sundaysOf(ui.ym).at(-1) ? addDays(sundaysOf(ui.ym).at(-1), 1) : addDays(todayISO(), 1)); openAnalysis(ref); },
+  analysis: () => openAnalysis(defaultAnalysisRef()),
   addDate: () => {
     const sug = sundaysOf(ui.ym).find(d => !D().rotations[d]) || `${ui.ym}-01`;
     const el = openSheet({ title: '날짜 추가', body: `<label class="f">예배 날짜</label><input class="input" type="date" id="nd" value="${sug}"><p class="muted small">일요일 외 특별예배도 추가할 수 있어요.</p>`, foot: `<button class="btn grow" data-close>취소</button><button class="btn primary grow" id="ndGo">다음</button>` });

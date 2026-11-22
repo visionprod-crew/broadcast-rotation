@@ -1,6 +1,6 @@
 {
-  "name": "3시 방송팀 로테이션",
-  "short_name": "방송팀 로테이션",
+  "name": "SLS 방송팀 관리 시스템",
+  "short_name": "SLS 방송팀",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
