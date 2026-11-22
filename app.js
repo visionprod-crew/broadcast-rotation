@@ -250,7 +250,9 @@ const GUEST = 'g:';
 const isGuest = id => typeof id === 'string' && id.startsWith(GUEST);
 const guestName = id => id.slice(GUEST.length);
 // 화면·이미지·텍스트·CSV 어디서나 용병은 '이름(용병)'으로 표시
-const nameOf = id => id ? (isGuest(id) ? `${guestName(id)}(용병)` : (member(id)?.name || '(삭제된 팀원)')) : '';
+// 명단에서 삭제한 팀원은 지난 기록에 'n:이름'으로 남김
+const FORMER = 'n:';
+const nameOf = id => id ? (isGuest(id) ? `${guestName(id)}(용병)` : String(id).startsWith(FORMER) ? id.slice(FORMER.length) : (member(id)?.name || '(삭제된 팀원)')) : '';
 const cardName = nameOf;
 function recentGuests() {
   const seen = new Map();
@@ -324,10 +326,10 @@ function memberAnalysisHTML(m, a, ref) {
 }
 function mountAnalysis(root, refDate, focusDate) {
   const res = analyze(refDate);
-  ui.anSort ||= lsGet('vfc-rotation:anSort', 'rest'); ui.anQ ||= '';
+  ui.anSort ||= lsGet('vfc-rotation:anSort', 'recent'); ui.anQ ||= '';
   root.innerHTML = `<div class="muted small" style="margin:0 2px 10px">${focusDate ? `<b style="color:var(--accent)">${dotDate(focusDate)} 편성 기준</b> · ` : ''}${dotDate(refDate)} 이전 기록 · 1개월 ${dotDate(res.m1From).slice(5)}~ · 3개월 ${dotDate(res.m3From).slice(5)}~</div>
     <div class="searchbox">${I.search}<input class="input an-q" placeholder="이름 검색" value="${esc(ui.anQ)}"></div>
-    <div class="seg an-sort" style="margin-bottom:10px">${[['rest', '오래 쉰 순'], ['many', '많이 한 순'], ['recent', '최근 순'], ['name', '명단 순']].map(([k, l]) => `<button class="${ui.anSort === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
+    <div class="seg an-sort" style="margin-bottom:10px">${[['recent', '최근 순'], ['many', '많이 한 순'], ['rest', '오래 쉰 순'], ['name', '명단 순']].map(([k, l]) => `<button class="${ui.anSort === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
     <div class="an-legend">${POS_ORDER.map(p => `<span><b style="background:${POS_COLOR[p]}"></b>${p}</span>`).join('')}</div>
     <div class="an-list"></div>`;
   const draw = () => {
@@ -412,6 +414,14 @@ function openSheet({ title, body, foot = '', onMount, onClose, wide }) {
 function closeSheet(el = sheetStack.at(-1)) {
   if (!el || !el.isConnected) return; el.remove(); sheetStack.splice(sheetStack.indexOf(el), 1); el._onClose?.();
   if (!sheetStack.length) document.body.style.overflow = '';
+}
+function choiceBox(msg, buttons) {
+  return new Promise(res => {
+    let done = false; const fin = v => { if (!done) { done = true; res(v); } };
+    const el = openSheet({ title: '확인', body: `<p style="margin:4px 0 6px;font-size:15px;white-space:pre-line">${esc(msg)}</p>`,
+      foot: buttons.map(([v, l, c]) => `<button class="btn ${c} grow" data-v="${v}">${l}</button>`).join(''), onClose: () => fin('cancel') });
+    el.querySelectorAll('.pf [data-v]').forEach(b => b.onclick = () => { fin(b.dataset.v); closeSheet(el); });
+  });
 }
 function confirmBox(msg, okLabel = '확인', danger = false) {
   return new Promise(res => {
@@ -891,8 +901,18 @@ function openMemberEditor(id) {
   $('#mDel', el)?.addEventListener('click', async () => {
     const used = Object.values(D().rotations).filter(r => SLOTS.some(s => r[s.k] === m.id) || r.spare?.includes(m.id) || r.absent?.includes(m.id)).length;
     if (used) {
-      if (await confirmBox(`${m.name}님은 로테이션 기록에 ${used}번 있어요.\n삭제하면 기록에 이름이 사라지니, 대신 비활동으로 바꿀까요?`, '비활동으로 변경')) {
-        m.active = false; await store.saveMember(m); closeSheet(el); toast('비활동으로 바꿨어요');
+      const pick = await choiceBox(`${m.name}님은 로테이션 기록에 ${used}번 있어요.\n· 비활동으로 변경: 명단에 남고 목록에서만 뒤로 빠져요\n· 삭제: 명단에서 지워지고, 지난 로테이션 기록의 이름은 그대로 남아요`,
+        [['cancel', '취소', ''], ['delete', '삭제', 'danger'], ['inactive', '비활동으로 변경', 'primary']]);
+      if (pick === 'inactive') { m.active = false; await store.saveMember(m); closeSheet(el); toast('비활동으로 바꿨어요'); }
+      if (pick === 'delete') {
+        const tag = FORMER + m.name;
+        for (const r of Object.values(D().rotations)) {
+          let ch = false; const n = clone(r);
+          SLOTS.forEach(s2 => { if (n[s2.k] === m.id) { n[s2.k] = tag; ch = true; } });
+          ['spare', 'absent'].forEach(k2 => { if ((n[k2] || []).includes(m.id)) { n[k2] = n[k2].map(x => x === m.id ? tag : x); ch = true; } });
+          if (ch) await store.saveRotation(n);
+        }
+        await store.deleteMember(m.id); closeSheet(el); toast('명단에서 삭제했어요 (지난 기록의 이름은 유지)');
       }
       return;
     }
