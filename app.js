@@ -4,6 +4,12 @@
 const CFG = window.APP_CONFIG || {};
 const OWNER_ID = (CFG.ownerId || 'admin').toLowerCase();
 const DOMAIN = CFG.loginDomain || 'vfc-rotation.app';
+// 아이디: 한글·영문·숫자 2~20자. Firebase 로그인용 이메일은 한글을 코드값으로 바꿔서 만듦
+const ID_RE = /^[a-z0-9._\-가-힣]{2,20}$/;
+const ID_MSG = '아이디는 한글·영문·숫자 2~20자로 입력해 주세요 (띄어쓰기 없이)';
+const normId = v => String(v || '').trim().replace(/\s+/g, '').toLowerCase();
+const idToLocal = id => /^[a-z0-9._-]+$/.test(id) ? id : 'k-' + [...id].map(c => c.codePointAt(0).toString(36)).join('-');
+const localToId = l => l.startsWith('k-') ? l.slice(2).split('-').map(x => String.fromCodePoint(parseInt(x, 36))).join('') : l;
 
 /* ───────── 포지션 정의 (시트 구조 그대로) ───────── */
 const SLOTS = [
@@ -137,7 +143,7 @@ class LocalStore {
 class FirebaseStore {
   mode = 'cloud'; listeners = new Set(); user = null; unsubs = []; ready = false;
   data = { members: {}, rotations: {}, settings: { ...DEFAULT_SETTINGS } };
-  email(id) { return `${id}@${DOMAIN}`; }
+  email(id) { return `${idToLocal(id)}@${DOMAIN}`; }
   async init() {
     const v = '10.12.5', base = `https://www.gstatic.com/firebasejs/${v}/`;
     const [appM, A, F] = await Promise.all([import(base + 'firebase-app.js'), import(base + 'firebase-auth.js'), import(base + 'firebase-firestore.js')]);
@@ -157,12 +163,13 @@ class FirebaseStore {
     this.unsubs.forEach(f => f()); this.unsubs = []; this.ready = false;
     if (!u) { this.user = null; return; }
     const { F, db } = this;
-    const loginId = u.email.split('@')[0];
+    let loginId = localToId(u.email.split('@')[0]);
     const ref = F.doc(db, 'users', u.uid);
     let snap = null; try { snap = await F.getDoc(ref); } catch {}
     let role = loginId === OWNER_ID ? 'owner' : snap?.exists() ? snap.data().role : null;
     if (!role) throw new Error('등록되지 않았거나 삭제된 계정이에요. 메인 관리자에게 문의해 주세요.');
     const name = snap?.exists() ? snap.data().name : '메인 관리자';
+    if (snap?.exists() && snap.data().loginId) loginId = snap.data().loginId;
     if (role === 'owner' && !snap?.exists()) await F.setDoc(ref, { loginId, name, role: 'owner', createdAt: Date.now() });
     this.user = { uid: u.uid, loginId, name, role };
     this._listen();
@@ -460,7 +467,7 @@ function bindLogin() {
   if (f) {
     f.onsubmit = async e => {
       e.preventDefault(); err.textContent = '';
-      try { await store.login(f.id.value.trim().toLowerCase(), f.pw.value); rerender(); } catch (x) { err.textContent = x.message; }
+      try { await store.login(normId(f.id.value), f.pw.value); rerender(); } catch (x) { err.textContent = x.message; }
     };
     f.querySelector('[data-setup]')?.addEventListener('click', () => { ui.ownerSetup = true; store.authError = null; rerender(); });
   }
@@ -468,8 +475,8 @@ function bindLogin() {
     o.querySelector('[data-back]')?.addEventListener('click', () => { ui.ownerSetup = false; rerender(); });
     o.onsubmit = async e => {
       e.preventDefault(); err.textContent = '';
-      const id = o.id.value.trim().toLowerCase();
-      if (!/^[a-z0-9._-]{3,20}$/.test(id)) return err.textContent = '아이디는 영문 소문자·숫자 3~20자로 입력해 주세요';
+      const id = normId(o.id.value);
+      if (!ID_RE.test(id)) return err.textContent = ID_MSG;
       if (o.pw.value.length < 6) return err.textContent = '비밀번호는 6자 이상이어야 해요';
       if (o.pw.value !== o.pw2.value) return err.textContent = '비밀번호가 서로 달라요';
       try { await store.createOwner(id, o.pw.value, o.name.value.trim() || '메인 관리자'); ui.ownerSetup = false; rerender(); toast('메인 관리자 계정이 만들어졌어요'); }
@@ -913,21 +920,6 @@ async function loadUserList() {
       ${u.role !== 'owner' ? `${store.mode === 'local' ? `<button class="btn sm ghost" data-act="resetUserPw" data-v="${u.uid}">비번 초기화</button>` : ''}<button class="btn sm danger" data-act="delUser" data-v="${u.uid}" data-n="${esc(u.name)}">삭제</button>` : ''}</div>`).join('');
   } catch (e) { box.innerHTML = `<div class="li muted">계정 목록을 불러오지 못했어요 (${esc(e.message)})</div>`; }
 }
-// 한글 이름 → 아이디 기본값 (국어의 로마자 표기 간이 변환)
-function romanize(name) {
-  const L = ['g','kk','n','d','tt','r','m','b','pp','s','ss','','j','jj','ch','k','t','p','h'];
-  const V = ['a','ae','ya','yae','eo','e','yeo','ye','o','wa','wae','oe','yo','u','wo','we','wi','yu','eu','ui','i'];
-  const T = ['','k','k','k','n','n','n','t','l','k','m','l','l','l','p','l','m','p','p','t','t','ng','t','t','k','t','p','t'];
-  const SUR = { 김: 'kim', 이: 'lee', 박: 'park', 정: 'jung', 최: 'choi', 허: 'heo', 전: 'jeon', 민: 'min', 황: 'hwang', 나: 'na', 양: 'yang', 조: 'cho', 강: 'kang', 윤: 'yoon', 장: 'jang', 임: 'lim', 한: 'han', 오: 'oh', 신: 'shin', 서: 'seo', 권: 'kwon', 송: 'song', 류: 'ryu', 유: 'yoo', 홍: 'hong', 문: 'moon', 손: 'son', 배: 'bae', 백: 'baek', 노: 'noh', 하: 'ha', 곽: 'kwak', 성: 'sung', 차: 'cha', 주: 'joo', 우: 'woo', 구: 'koo', 고: 'ko', 남: 'nam', 안: 'ahn' };
-  const base = name.replace(/\s.*$/, '');
-  let out = base.length >= 2 && SUR[base[0]] ? SUR[base[0]] : '';
-  for (const ch of out ? base.slice(1) : base) {
-    const c = ch.charCodeAt(0) - 0xac00;
-    if (c < 0 || c > 11171) { if (/[a-z0-9]/i.test(ch)) out += ch.toLowerCase(); continue; }
-    out += L[Math.floor(c / 588)] + V[Math.floor((c % 588) / 28)] + T[c % 28];
-  }
-  return out.slice(0, 20);
-}
 async function openBulkUsers() {
   let existing = [];
   try { existing = await store.listUsers(); } catch {}
@@ -937,11 +929,11 @@ async function openBulkUsers() {
   const defOn = m => /팀장|부팀장/.test(m.note || '') || /강도사|전도사|목사/.test(m.name);
   const el = openSheet({
     title: '명단에서 계정 한 번에 만들기', wide: true,
-    body: `<p class="muted small" style="margin:-4px 2px 12px">체크한 사람의 계정을 같은 초기 비밀번호로 만들어요. 아이디는 바꿀 수 있어요.</p>
+    body: `<p class="muted small" style="margin:-4px 2px 12px">체크한 사람의 계정을 같은 초기 비밀번호로 만들어요. 아이디는 이름(한글)으로 채워뒀고 바꿀 수 있어요.</p>
       <div class="card list">${ms.map(m => { const done = hasName.has(m.name); return `<div class="li" data-mid="${m.id}" style="gap:10px;${done ? 'opacity:.5' : ''}">
         <input type="checkbox" class="bu-on" ${!done && defOn(m) ? 'checked' : ''} ${done ? 'disabled' : ''} style="width:20px;height:20px;flex:none">
         <div style="width:84px;flex:none;font-size:14px"><b>${esc(m.name)}</b><div class="d">${done ? '계정 있음' : esc(m.note || '')}</div></div>
-        <input class="input bu-id" style="height:38px;flex:1;min-width:0;padding:0 8px;font-size:13.5px" value="${esc(romanize(m.name))}" autocapitalize="off" ${done ? 'disabled' : ''}>
+        <input class="input bu-id" style="height:38px;flex:1;min-width:0;padding:0 8px;font-size:13.5px" value="${esc(m.name.replace(/\s.*$/, ''))}" autocapitalize="off" ${done ? 'disabled' : ''}>
         <select class="input bu-role" style="height:38px;width:78px;flex:none;padding:0 6px;font-size:13.5px" ${done ? 'disabled' : ''}><option value="leader" ${defRole(m) === 'leader' ? 'selected' : ''}>팀장</option><option value="subleader" ${defRole(m) === 'subleader' ? 'selected' : ''}>부팀장</option></select>
       </div>`; }).join('')}</div>
       <label class="f">초기 비밀번호 (6자 이상, 모두 동일)</label><input class="input" id="buPw" type="text" autocomplete="off" placeholder="예: 123456">
@@ -952,10 +944,10 @@ async function openBulkUsers() {
     const err = $('#buErr', el), log = $('#buLog', el); err.textContent = ''; log.innerHTML = '';
     const pw = $('#buPw', el).value;
     if (pw.length < 6) return err.textContent = '비밀번호는 6자 이상이어야 해요';
-    const rows = [...el.querySelectorAll('[data-mid]')].filter(r => r.querySelector('.bu-on').checked).map(r => ({ name: member(r.dataset.mid).name, loginId: r.querySelector('.bu-id').value.trim().toLowerCase(), role: r.querySelector('.bu-role').value }));
+    const rows = [...el.querySelectorAll('[data-mid]')].filter(r => r.querySelector('.bu-on').checked).map(r => ({ name: member(r.dataset.mid).name, loginId: normId(r.querySelector('.bu-id').value), role: r.querySelector('.bu-role').value }));
     if (!rows.length) return err.textContent = '만들 사람을 체크해 주세요';
-    const bad = rows.find(r => !/^[a-z0-9._-]{3,20}$/.test(r.loginId) || r.loginId === OWNER_ID || hasId.has(r.loginId));
-    if (bad) return err.textContent = `${bad.name}: 아이디는 영문 소문자·숫자 3~20자이고, 이미 쓰는 아이디와 겹치면 안 돼요`;
+    const bad = rows.find(r => !ID_RE.test(r.loginId) || r.loginId === OWNER_ID || hasId.has(r.loginId));
+    if (bad) return err.textContent = `${bad.name}: ${ID_RE.test(bad.loginId) ? '이미 쓰는 아이디예요' : ID_MSG}`;
     if (new Set(rows.map(r => r.loginId)).size !== rows.length) return err.textContent = '아이디가 서로 겹쳐요';
     $('#buGo', el).disabled = true;
     const ok = [];
@@ -976,7 +968,7 @@ function openAddUser() {
       <label class="f">역할</label><div class="seg" id="uRole"><button type="button" class="on" data-v="leader">팀장</button><button type="button" data-v="subleader">부팀장</button></div>
       <label class="f">이름</label><input class="input" id="uName" placeholder="예: 김민" list="memNames">
       <datalist id="memNames">${membersSorted().filter(m => m.active).map(m => `<option value="${esc(m.name)}">`).join('')}</datalist>
-      <label class="f">아이디 (영문 소문자·숫자 3~20자)</label><input class="input" id="uId" autocapitalize="off" placeholder="예: kimmin">
+      <label class="f">아이디 (한글·영문·숫자 2~20자)</label><input class="input" id="uId" autocapitalize="off" placeholder="예: 김민">
       <label class="f">초기 비밀번호 (6자 이상)</label><input class="input" id="uPw" autocomplete="new-password">
       <p class="muted small">만든 뒤 아이디·비밀번호를 당사자에게 전달해 주세요. 본인이 설정 &gt; 비밀번호 변경에서 바꿀 수 있어요.</p>
       <div class="err" id="uErr"></div>`,
@@ -985,10 +977,10 @@ function openAddUser() {
   el.querySelectorAll('#uRole button').forEach(b => b.onclick = () => { el.querySelectorAll('#uRole button').forEach(x => x.classList.remove('on')); b.classList.add('on'); });
   $('#uSave', el).onclick = async () => {
     const err = $('#uErr', el); err.textContent = '';
-    const name = $('#uName', el).value.trim(), loginId = $('#uId', el).value.trim().toLowerCase(), pw = $('#uPw', el).value;
+    const name = $('#uName', el).value.trim(), loginId = normId($('#uId', el).value), pw = $('#uPw', el).value;
     const role = el.querySelector('#uRole .on').dataset.v;
     if (!name) return err.textContent = '이름을 입력해 주세요';
-    if (!/^[a-z0-9._-]{3,20}$/.test(loginId)) return err.textContent = '아이디는 영문 소문자·숫자 3~20자로 입력해 주세요';
+    if (!ID_RE.test(loginId)) return err.textContent = ID_MSG;
     if (loginId === OWNER_ID) return err.textContent = '관리자 아이디와 같을 수 없어요';
     if (pw.length < 6) return err.textContent = '비밀번호는 6자 이상이어야 해요';
     $('#uSave', el).disabled = true;
