@@ -260,6 +260,74 @@ function countsFor(rots) {
   return c;
 }
 
+/* ───────── 팀원 로테이션 분석 ───────── */
+const POS_NAME = { pd: 'PD', main1: '메인', main2: '메인', cam3: '3번캠', cam4: '4번캠', ptz: 'PTZ', jib: 'Jib', text: '자막' };
+const POS_ORDER = ['PD', '메인', '3번캠', '4번캠', 'PTZ', 'Jib', '자막'];
+const POS_COLOR = { PD: '#e8892b', 메인: '#3a6fd8', '3번캠': '#2c9a6a', '4번캠': '#8b5cf6', PTZ: '#c9a227', Jib: '#e0567f', 자막: '#14a3b8' };
+const addDays = (iso, n) => { const d = parseISO(iso); d.setDate(d.getDate() + n); return toISO(d); };
+function analyze(refDate) {
+  // refDate 이전(당일 제외) 기록 기준: 최근 / 1개월(30일) / 3개월(91일)
+  const m1From = addDays(refDate, -30), m3From = addDays(refDate, -91);
+  const rots = Object.values(D().rotations).filter(r => r.date < refDate).sort((a, b) => b.date.localeCompare(a.date));
+  const out = {};
+  const get = id => out[id] ||= { last: null, m1: { n: 0, c: {}, ab: 0 }, m3: { n: 0, c: {}, ab: 0 } };
+  rots.forEach(r => {
+    const seen = {};
+    SLOTS.forEach(s => { const id = r[s.k]; if (id) (seen[id] ||= []).push(POS_NAME[s.k]); });
+    Object.entries(seen).forEach(([id, ps]) => {
+      const a = get(id); ps = [...new Set(ps)];
+      if (!a.last) a.last = { date: r.date, pos: ps };
+      for (const [w, from] of [['m1', m1From], ['m3', m3From]]) if (r.date >= from) ps.forEach(p => { a[w].c[p] = (a[w].c[p] || 0) + 1; a[w].n++; });
+    });
+    (r.absent || []).forEach(id => { const a = get(id); if (r.date >= m1From) a.m1.ab++; if (r.date >= m3From) a.m3.ab++; });
+  });
+  return { refDate, m1From, m3From, data: out };
+}
+const pct = (n, t) => t ? Math.round(n / t * 100) : 0;
+function agoText(date, ref) { const d = Math.round((parseISO(ref) - parseISO(date)) / 864e5); return d < 7 ? `${d}일 전` : `${Math.round(d / 7)}주 전`; }
+function windowHTML(label, w, sub) {
+  const ent = POS_ORDER.filter(p => w.c[p]).map(p => [p, w.c[p]]);
+  if (!ent.length) return `<div class="an-row"><div class="an-k">${label}<small>${sub}</small></div><div class="an-v muted small">기록 없음${w.ab ? ` · 불참 ${w.ab}회` : ''}</div></div>`;
+  return `<div class="an-row"><div class="an-k">${label}<small>${w.n}회</small></div><div class="an-v">
+    <div class="an-bar">${ent.map(([p, n]) => `<i style="flex:${n};background:${POS_COLOR[p]}" title="${p}"></i>`).join('')}</div>
+    <div class="an-chips">${ent.map(([p, n]) => `<span><b style="background:${POS_COLOR[p]}"></b>${p} ${n}회 <em>${pct(n, w.n)}%</em></span>`).join('')}${w.ab ? `<span class="ab">불참 ${w.ab}회</span>` : ''}</div>
+  </div></div>`;
+}
+function memberAnalysisHTML(m, a, ref) {
+  const last = a?.last;
+  return `<div class="card an-card">
+    <div class="an-head"><b>${esc(m.name)}</b>${m.age ? `<span class="muted small">${esc(m.age)}</span>` : ''}${m.type === '용병' ? '<span class="chip tag">용병</span>' : ''}
+      <div class="grow"></div>
+      ${last ? `<span class="an-last">최근 <b>${last.pos.join('·')}</b> <span class="muted">${dotDate(last.date).slice(5)} · ${agoText(last.date, ref)}</span></span>` : '<span class="muted small">최근 기록 없음</span>'}
+    </div>
+    ${windowHTML('1개월', a?.m1 || { n: 0, c: {}, ab: 0 }, '0회')}
+    ${windowHTML('3개월', a?.m3 || { n: 0, c: {}, ab: 0 }, '0회')}
+  </div>`;
+}
+function openAnalysis(refDate, focusDate) {
+  let sort = lsGet('vfc-rotation:anSort', 'rest'), q = '';
+  const res = analyze(refDate);
+  const el = openSheet({
+    title: '팀원 로테이션 분석', wide: true,
+    body: `<div class="muted small" style="margin:-4px 2px 10px">${focusDate ? `${dotDate(focusDate)} 편성 기준 · ` : ''}${dotDate(refDate)} 이전 기록 · 1개월 ${dotDate(res.m1From).slice(5)}~ · 3개월 ${dotDate(res.m3From).slice(5)}~</div>
+      <div class="searchbox">${I.search}<input class="input" id="anq" placeholder="이름 검색"></div>
+      <div class="seg" id="anSort" style="margin-bottom:10px">${[['rest', '오래 쉰 순'], ['many', '많이 한 순'], ['recent', '최근 순'], ['name', '명단 순']].map(([k, l]) => `<button class="${sort === k ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
+      <div class="an-legend">${POS_ORDER.map(p => `<span><b style="background:${POS_COLOR[p]}"></b>${p}</span>`).join('')}</div>
+      <div id="anList"></div>`,
+  });
+  const draw = () => {
+    let ms = membersSorted().filter(m => (m.active || res.data[m.id]?.m3.n) && (!q || m.name.includes(q)));
+    const A = id => res.data[id];
+    if (sort === 'rest') ms.sort((a, b) => (A(a.id)?.last?.date || '0').localeCompare(A(b.id)?.last?.date || '0'));
+    if (sort === 'recent') ms.sort((a, b) => (A(b.id)?.last?.date || '0').localeCompare(A(a.id)?.last?.date || '0'));
+    if (sort === 'many') ms.sort((a, b) => (A(b.id)?.m3.n || 0) - (A(a.id)?.m3.n || 0));
+    $('#anList', el).innerHTML = ms.map(m => memberAnalysisHTML(m, A(m.id), refDate)).join('') || '<div class="empty">해당하는 팀원이 없어요</div>';
+  };
+  draw();
+  el.querySelectorAll('#anSort button').forEach(b => b.onclick = () => { sort = b.dataset.s; lsSet('vfc-rotation:anSort', sort); el.querySelectorAll('#anSort button').forEach(x => x.classList.toggle('on', x === b)); draw(); });
+  $('#anq', el).oninput = e => { q = e.target.value.trim(); draw(); };
+}
+
 /* ───────── 아이콘 ───────── */
 const I = {
   cal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M3 9.5h18M8 3v3M16 3v3"/></svg>',
@@ -284,6 +352,7 @@ const I = {
   logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h11"/></svg>',
   pen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/></svg>',
   text: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
+  chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
   grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>',
 };
 
@@ -422,6 +491,7 @@ function renderMonth() {
     <div class="row" style="margin-bottom:12px">
       <div class="seg"><button class="${ui.monthView === 'card' ? 'on' : ''}" data-act="mview" data-v="card">카드</button><button class="${ui.monthView === 'table' ? 'on' : ''}" data-act="mview" data-v="table">시트형 표</button></div>
       <div class="grow"></div>
+      <button class="btn sm ghost" data-act="analysis">${I.chart}분석</button>
       ${can.editRotation() ? `<button class="btn sm" data-act="addDate">${I.plus}날짜 추가</button>` : ''}
     </div>`;
   if (can.editRotation() && missingSundays.length) {
@@ -486,11 +556,13 @@ function renderEditorBody() {
   const box = $('#edBody'); if (!box) return;
   const { msgs, bad } = issues(draft);
   box.innerHTML = `
+    <button class="btn block ghost" id="edAn" style="margin-bottom:10px">${I.chart}팀원 로테이션 분석 보기 (최근 · 1개월 · 3개월)</button>
     ${SLOTS.map(s => { const id = draft[s.k]; return `<button class="slot ${id && bad.has(id) ? 'warn' : ''}" data-slot="${s.k}"><div class="lbl"><b>${s.cam}</b><i>${s.pos || (s.k === 'text' ? '자막' : '프로듀서')}${s.optional ? ' · 선택' : ''}</i></div><div class="v ${id ? '' : 'none'}">${id ? esc(nameOf(id)) : '선택 안 함'}</div><span class="chev">${I.chev}</span></button>`; }).join('')}
     ${MULTI.map(mm => { const ids = draft[mm.k] || []; return `<button class="slot" data-slot="${mm.k}"><div class="lbl"><b>${mm.label}</b><i>여러 명 선택</i></div><div class="v ${ids.length ? '' : 'none'}">${ids.length ? ids.map(id => `<span class="chip ${mm.k === 'absent' ? 'absent' : 'spare'}">${esc(nameOf(id))}</span>`).join('') : '없음'}</div><span class="chev">${I.chev}</span></button>`; }).join('')}
     <label class="f">메모 (선택)</label><input class="input" id="memo" placeholder="예: 성탄 특별예배, 장비 점검 등" value="${esc(draft.memo || '')}">
     ${msgs.length ? `<div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:6px">${msgs.map(t => `<span class="chip warn">⚠︎ ${esc(t)}</span>`).join('')}</div>` : ''}`;
   box.querySelectorAll('[data-slot]').forEach(b => b.onclick = () => openPicker(b.dataset.slot));
+  $('#edAn').onclick = () => openAnalysis(draft.date, draft.date);
   $('#memo').oninput = e => draft.memo = e.target.value;
 }
 async function saveDraft() {
@@ -508,8 +580,9 @@ function openPicker(k) {
   let sel = multi ? [...(draft[k] || [])] : draft[k];
   let q = '';
   const monthCounts = countsFor(rotationsOfMonth(ymOf(draft.date)).filter(r => r.date !== draft.date));
+  const an = analyze(draft.date).data;
   const el = openSheet({
-    title, body: `<div class="searchbox">${I.search}<input class="input" id="pq" placeholder="이름 검색"></div><div id="pl"></div>
+    title, body: `<div class="row" style="margin-bottom:10px"><div class="searchbox grow" style="margin:0">${I.search}<input class="input" id="pq" placeholder="이름 검색"></div><button class="btn" id="pkAn">${I.chart}분석</button></div><div id="pl"></div>
       <div class="grp">목록에 없는 사람 (용병·게스트)</div>
       <div class="row"><input class="input grow" id="guestName" placeholder="이름 입력"><button class="btn" id="guestAdd">추가</button></div>`,
     foot: multi ? `<button class="btn grow" data-act="clr">모두 해제</button><button class="btn primary grow" data-act="ok">완료</button>` : `<button class="btn grow" data-act="clr">비우기 ( - )</button>`,
@@ -534,9 +607,11 @@ function openPicker(k) {
       if (k === 'absent' && w[m.id]) badges.length = 0, badges.push(`<span class="chip warn">${esc(w[m.id].join(', '))} 배정됨</span>`);
       (m.roles || []).forEach(t => badges.push(`<span class="chip tag">${esc(t)}</span>`));
       const c = monthCounts[m.id]?.n || 0;
+      const a = an[m.id], pn = slot ? POS_NAME[slot.k] : null;
+      const anLine = a?.last ? `<div class="pk-an">최근 <b>${a.last.pos.join('·')}</b> ${dotDate(a.last.date).slice(5)}${pn ? ` · 3개월 ${pn} <b>${a.m3.c[pn] || 0}회</b>${a.m3.n ? ` (${pct(a.m3.c[pn] || 0, a.m3.n)}%)` : ''}` : ` · 3개월 ${a.m3.n}회`}</div>` : '<div class="pk-an">최근 기록 없음</div>';
       return `<button class="pick ${on ? 'on' : ''} ${(!m.active || absent.has(m.id)) && k !== 'absent' ? 'dim' : ''}" data-id="${m.id}">
         ${multi ? `<span class="chk">${on ? I.check : ''}</span>` : ''}
-        <div class="grow"><div class="nm">${esc(m.name)} ${m.age ? `<span class="muted small">${esc(m.age)}</span>` : ''} ${m.note && m.note.length < 8 ? `<span class="muted small">· ${esc(m.note)}</span>` : ''}</div>${badges.length ? `<div class="meta">${badges.join('')}</div>` : ''}</div>
+        <div class="grow"><div class="nm">${esc(m.name)} ${m.age ? `<span class="muted small">${esc(m.age)}</span>` : ''} ${m.note && m.note.length < 8 ? `<span class="muted small">· ${esc(m.note)}</span>` : ''}</div>${anLine}${badges.length ? `<div class="meta">${badges.join('')}</div>` : ''}</div>
         <span class="cnt">이달 ${c}회</span>
         ${!multi && on ? `<span>${I.check}</span>` : ''}
       </button>`;
@@ -548,6 +623,7 @@ function openPicker(k) {
     });
   };
   draw();
+  $('#pkAn', el).onclick = () => openAnalysis(draft.date, draft.date);
   $('#pq', el).oninput = e => { q = e.target.value.trim(); draw(); };
   el.querySelector('[data-act="clr"]').onclick = () => { if (multi) { sel = []; draw(); } else { draft[k] = null; closeSheet(el); renderEditorBody(); } };
   el.querySelector('[data-act="ok"]')?.addEventListener('click', () => { draft[k] = sel; closeSheet(el); renderEditorBody(); });
@@ -923,6 +999,7 @@ const ACT = {
   mview: v => { ui.monthView = v; saveUI(); rerender(); },
   toggleCounts: () => { ui.showCounts = !ui.showCounts; rerender(); },
   edit: v => openEditor(v),
+  analysis: () => { const up = upcomingSunday(); const ref = ymOf(up) === ui.ym ? addDays(up, 1) : (sundaysOf(ui.ym).at(-1) ? addDays(sundaysOf(ui.ym).at(-1), 1) : addDays(todayISO(), 1)); openAnalysis(ref); },
   addDate: () => {
     const sug = sundaysOf(ui.ym).find(d => !D().rotations[d]) || `${ui.ym}-01`;
     const el = openSheet({ title: '날짜 추가', body: `<label class="f">예배 날짜</label><input class="input" type="date" id="nd" value="${sug}"><p class="muted small">일요일 외 특별예배도 추가할 수 있어요.</p>`, foot: `<button class="btn grow" data-close>취소</button><button class="btn primary grow" id="ndGo">다음</button>` });
