@@ -12,7 +12,14 @@ window.APP_CONFIG = {
   loginDomain: 'vfc-rotation.app',
 
   // Firebase 콘솔 > 프로젝트 설정 > 내 앱(웹) 에서 복사한 값으로 교체
-  firebase: null,
+  firebase: {
+    apiKey: "AIzaSyDcFOgVvHjNWSFpTPHeI7_BSGAkzSV6exY",
+    authDomain: "broadcast-rotation-5f7bb.firebaseapp.com",
+    projectId: "broadcast-rotation-5f7bb",
+    storageBucket: "broadcast-rotation-5f7bb.firebasestorage.app",
+    messagingSenderId: "544083183952",
+    appId: "1:544083183952:web:0f0b5828089965ea5b0455"
+  },
   /* 예시
   firebase: {
     apiKey: "AIza...",
