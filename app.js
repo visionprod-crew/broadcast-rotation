@@ -18,7 +18,7 @@ const SLOTS = [
 ];
 const MULTI = [{ k: 'spare', label: '예비/휴가' }, { k: 'absent', label: '불참' }];
 const ROLE_TAGS = ['PD', '메인', '3C', '4C', 'PTZ', 'Jib', '자막'];
-const MEMBER_TYPES = ['팀원', '사역자', '용병'];
+const MEMBER_TYPES = ['팀원', '사역자'];
 const ROLES = { owner: '메인 관리자', leader: '팀장', subleader: '부팀장' };
 const can = {
   editRotation: () => ['owner', 'leader', 'subleader'].includes(store.user?.role),
@@ -238,7 +238,16 @@ const saveUI = () => lsSet(LS_UI, { tab: ui.tab, monthView: ui.monthView, memFil
 
 const D = () => store.data;
 const member = id => D().members[id];
-const nameOf = id => id ? (member(id)?.name || '(삭제된 팀원)') : '';
+// 용병은 명단에 넣지 않고 'g:이름' 형태로 로테이션에 바로 저장
+const GUEST = 'g:';
+const isGuest = id => typeof id === 'string' && id.startsWith(GUEST);
+const nameOf = id => id ? (isGuest(id) ? id.slice(GUEST.length) : (member(id)?.name || '(삭제된 팀원)')) : '';
+const cardName = id => isGuest(id) ? `${nameOf(id)}(용병)` : nameOf(id);
+function recentGuests() {
+  const seen = new Map();
+  Object.values(D().rotations).sort((a, b) => b.date.localeCompare(a.date)).forEach(r => [...SLOTS.map(s => r[s.k]), ...(r.spare || []), ...(r.absent || [])].forEach(id => { if (isGuest(id) && !seen.has(id)) seen.set(id, r.date); }));
+  return [...seen.keys()].slice(0, 12);
+}
 const membersSorted = () => Object.values(D().members).sort((a, b) => (a.order ?? 999) - (b.order ?? 999) || a.name.localeCompare(b.name, 'ko'));
 const rotationsOfMonth = ym => Object.values(D().rotations).filter(r => ymOf(r.date) === ym).sort((a, b) => a.date.localeCompare(b.date));
 const allDates = () => Object.keys(D().rotations).sort();
@@ -296,7 +305,7 @@ function windowHTML(label, w, sub) {
 function memberAnalysisHTML(m, a, ref) {
   const last = a?.last;
   return `<div class="card an-card">
-    <div class="an-head"><b>${esc(m.name)}</b>${m.age ? `<span class="muted small">${esc(m.age)}</span>` : ''}${m.type === '용병' ? '<span class="chip tag">용병</span>' : ''}
+    <div class="an-head"><b>${esc(m.name)}</b>${m.age ? `<span class="muted small">${esc(m.age)}</span>` : ''}
       <div class="grow"></div>
       ${last ? `<span class="an-last">최근 <b>${last.pos.join('·')}</b> <span class="muted">${dotDate(last.date).slice(5)} · ${agoText(last.date, ref)}</span></span>` : '<span class="muted small">최근 기록 없음</span>'}
     </div>
@@ -512,7 +521,7 @@ function renderSvc(r, isNext, isPast) {
   const { msgs, bad } = issues(r);
   const cells = SLOTS.filter(s => !(s.optional && !r[s.k])).map(s => {
     const id = r[s.k];
-    return `<div class="pos"><div class="lbl"><b>${s.pos || s.cam}</b><i>${s.pos ? s.cam : '&nbsp;'}</i></div><div class="nm ${id ? (bad.has(id) ? 'bad' : '') : 'none'}">${id ? esc(nameOf(id)) : '-'}</div></div>`;
+    return `<div class="pos"><div class="lbl"><b>${s.pos || s.cam}</b><i>${s.pos ? s.cam : '&nbsp;'}</i></div><div class="nm ${id ? (bad.has(id) ? 'bad' : '') : 'none'}">${id ? esc(cardName(id)) : '-'}</div></div>`;
   });
   if (cells.length % 2) cells.push('<div class="pos"></div>');
   const chips = (ids, cls) => ids?.length ? ids.map(id => `<span class="chip ${cls}">${esc(nameOf(id))}</span>`).join('') : '<span class="muted small" style="padding-top:3px">없음</span>';
@@ -557,7 +566,7 @@ function renderEditorBody() {
   const { msgs, bad } = issues(draft);
   box.innerHTML = `
     <button class="btn block ghost" id="edAn" style="margin-bottom:10px">${I.chart}팀원 로테이션 분석 보기 (최근 · 1개월 · 3개월)</button>
-    ${SLOTS.map(s => { const id = draft[s.k]; return `<button class="slot ${id && bad.has(id) ? 'warn' : ''}" data-slot="${s.k}"><div class="lbl"><b>${s.cam}</b><i>${s.pos || (s.k === 'text' ? '자막' : '프로듀서')}${s.optional ? ' · 선택' : ''}</i></div><div class="v ${id ? '' : 'none'}">${id ? esc(nameOf(id)) : '선택 안 함'}</div><span class="chev">${I.chev}</span></button>`; }).join('')}
+    ${SLOTS.map(s => { const id = draft[s.k]; return `<button class="slot ${id && bad.has(id) ? 'warn' : ''}" data-slot="${s.k}"><div class="lbl"><b>${s.cam}</b><i>${s.pos || (s.k === 'text' ? '자막' : '프로듀서')}${s.optional ? ' · 선택' : ''}</i></div><div class="v ${id ? '' : 'none'}">${id ? esc(nameOf(id)) + (isGuest(id) ? ' <span class="chip tag">용병</span>' : '') : '선택 안 함'}</div><span class="chev">${I.chev}</span></button>`; }).join('')}
     ${MULTI.map(mm => { const ids = draft[mm.k] || []; return `<button class="slot" data-slot="${mm.k}"><div class="lbl"><b>${mm.label}</b><i>여러 명 선택</i></div><div class="v ${ids.length ? '' : 'none'}">${ids.length ? ids.map(id => `<span class="chip ${mm.k === 'absent' ? 'absent' : 'spare'}">${esc(nameOf(id))}</span>`).join('') : '없음'}</div><span class="chev">${I.chev}</span></button>`; }).join('')}
     <label class="f">메모 (선택)</label><input class="input" id="memo" placeholder="예: 성탄 특별예배, 장비 점검 등" value="${esc(draft.memo || '')}">
     ${msgs.length ? `<div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:6px">${msgs.map(t => `<span class="chip warn">⚠︎ ${esc(t)}</span>`).join('')}</div>` : ''}`;
@@ -583,8 +592,12 @@ function openPicker(k) {
   const an = analyze(draft.date).data;
   const el = openSheet({
     title, body: `<div class="row" style="margin-bottom:10px"><div class="searchbox grow" style="margin:0">${I.search}<input class="input" id="pq" placeholder="이름 검색"></div><button class="btn" id="pkAn">${I.chart}분석</button></div><div id="pl"></div>
-      <div class="grp">목록에 없는 사람 (용병·게스트)</div>
-      <div class="row"><input class="input grow" id="guestName" placeholder="이름 입력"><button class="btn" id="guestAdd">추가</button></div>`,
+      <div class="grp">용병</div>
+      <div class="card" style="padding:12px">
+        <div class="row"><input class="input grow" id="guestName" placeholder="용병 이름 입력" maxlength="20" enterkeyhint="done"><button class="btn primary" id="guestAdd">${multi ? '추가' : '선택'}</button></div>
+        <div id="guestChips" class="row" style="flex-wrap:wrap;gap:6px;margin-top:10px"></div>
+        <div class="muted small" style="margin-top:8px">명단에 저장되지 않고 이 날짜 로테이션에만 이름이 들어가요.</div>
+      </div>`,
     foot: multi ? `<button class="btn grow" data-act="clr">모두 해제</button><button class="btn primary grow" data-act="ok">완료</button>` : `<button class="btn grow" data-act="clr">비우기 ( - )</button>`,
   });
   const where = () => { const w = {}; SLOTS.forEach(s => { if (draft[s.k] && s.k !== k) (w[draft[s.k]] ||= []).push(s.pos || s.cam); }); return w; };
@@ -593,11 +606,10 @@ function openPicker(k) {
     const list = membersSorted().filter(m => !q || m.name.includes(q));
     const fits = m => slot && (m.roles || []).includes(slot.tag);
     const groups = slot ? [
-      ['추천 · 가능 포지션', list.filter(m => m.active && m.type !== '용병' && fits(m))],
-      ['팀원', list.filter(m => m.active && m.type !== '용병' && !fits(m))],
-      ['용병·게스트', list.filter(m => m.active && m.type === '용병')],
+      ['추천 · 가능 포지션', list.filter(m => m.active && fits(m))],
+      ['팀원', list.filter(m => m.active && !fits(m))],
       ['비활동', list.filter(m => !m.active)],
-    ] : [['팀원', list.filter(m => m.active && m.type !== '용병')], ['용병·게스트', list.filter(m => m.active && m.type === '용병')], ['비활동', list.filter(m => !m.active)]];
+    ] : [['팀원', list.filter(m => m.active)], ['비활동', list.filter(m => !m.active)]];
     $('#pl', el).innerHTML = groups.filter(g => g[1].length).map(([g, ms]) => `<div class="grp">${g}</div>` + ms.map(m => {
       const on = multi ? sel.includes(m.id) : sel === m.id;
       const badges = [];
@@ -621,23 +633,25 @@ function openPicker(k) {
       if (multi) { sel = sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]; draw(); }
       else { draft[k] = id; closeSheet(el); renderEditorBody(); }
     });
+    const gs = [...new Set([...(multi ? sel : [sel]).filter(isGuest), ...recentGuests()])];
+    $('#guestChips', el).innerHTML = gs.length ? gs.map(g => { const on = multi ? sel.includes(g) : sel === g; return `<button class="chip ${on ? 'spare' : ''}" data-g="${esc(g)}" style="padding:6px 12px;font-size:13.5px">${on ? '✓ ' : ''}${esc(nameOf(g))}</button>`; }).join('') : '';
+    $('#guestChips', el).querySelectorAll('[data-g]').forEach(b => b.onclick = () => pickGuest(b.dataset.g, true));
+  };
+  const pickGuest = (g, toggle) => {
+    if (multi) { sel = sel.includes(g) ? (toggle ? sel.filter(x => x !== g) : sel) : [...sel, g]; draw(); }
+    else { draft[k] = g; closeSheet(el); renderEditorBody(); }
   };
   draw();
   $('#pkAn', el).onclick = () => openAnalysis(draft.date, draft.date);
   $('#pq', el).oninput = e => { q = e.target.value.trim(); draw(); };
   el.querySelector('[data-act="clr"]').onclick = () => { if (multi) { sel = []; draw(); } else { draft[k] = null; closeSheet(el); renderEditorBody(); } };
   el.querySelector('[data-act="ok"]')?.addEventListener('click', () => { draft[k] = sel; closeSheet(el); renderEditorBody(); });
-  $('#guestAdd', el).onclick = async () => {
-    const name = $('#guestName', el).value.trim(); if (!name) return;
-    let m = Object.values(D().members).find(x => x.name === name);
-    if (!m) {
-      if (!can.editMembers() && store.mode === 'cloud') return toast('팀원 추가는 팀장 이상만 할 수 있어요');
-      m = { id: uid('m_'), name, age: '', phone: '', note: '용병', roles: [], type: '용병', active: true, order: 900 + Object.keys(D().members).length };
-      await store.saveMember(m);
-    }
-    if (multi) { if (!sel.includes(m.id)) sel.push(m.id); $('#guestName', el).value = ''; draw(); }
-    else { draft[k] = m.id; closeSheet(el); renderEditorBody(); }
+  const addGuest = () => {
+    const name = $('#guestName', el).value.trim().replace(/\(용병\)$/, '').trim(); if (!name) return toast('용병 이름을 입력해 주세요');
+    $('#guestName', el).value = ''; pickGuest(GUEST + name, false);
   };
+  $('#guestAdd', el).onclick = addGuest;
+  $('#guestName', el).onkeydown = e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addGuest(); } };
 }
 
 /* ── 주간 공지 ── */
@@ -712,7 +726,7 @@ function drawCard(ctx, x, y, r, st) {
     if (b) { ctx.fillText(a, x + c1 / 2, cy); ctx.fillText(b, x + c1 + c2 / 2, cy); }
     else { ctx.font = `700 23px ${FONT}`; ctx.fillStyle = ink; ctx.fillText(a, x + (c1 + c2) / 2, cy); }
     ctx.fillStyle = id ? ink : '#a3a1a9'; ctx.font = `${id ? 800 : 500} 27px ${FONT}`;
-    ctx.fillText(id ? nameOf(id) : '-', x + c1 + c2 + c3 / 2, cy);
+    ctx.fillText(id ? cardName(id) : '-', x + c1 + c2 + c3 / 2, cy);
     ctx.strokeStyle = line; ctx.lineWidth = 1.2;
     ctx.beginPath(); ctx.moveTo(x, ry); ctx.lineTo(x + w, ry); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(x + c1 + c2, ry); ctx.lineTo(x + c1 + c2, ry + row); ctx.stroke();
@@ -788,13 +802,14 @@ function renderMembers() {
   const yearCounts = countsFor(Object.values(D().rotations).filter(r => r.date.startsWith(todayISO().slice(0, 4))));
   const q = ui.memQuery;
   const all = membersSorted();
-  const f = { all: () => true, active: m => m.active && m.type !== '용병', guest: m => m.type === '용병', off: m => !m.active }[ui.memFilter];
+  if (!['all', 'active', 'off'].includes(ui.memFilter)) ui.memFilter = 'active';
+  const f = { all: () => true, active: m => m.active, off: m => !m.active }[ui.memFilter];
   const list = all.filter(f).filter(m => !q || m.name.includes(q) || (m.phone || '').includes(q));
-  const n = k => all.filter({ all: () => true, active: m => m.active && m.type !== '용병', guest: m => m.type === '용병', off: m => !m.active }[k]).length;
+  const n = k => all.filter({ all: () => true, active: m => m.active, off: m => !m.active }[k]).length;
   return `
     <div class="row" style="margin:6px 0 12px"><div style="font-size:22px;font-weight:800;letter-spacing:-.02em" class="grow">팀원 명단</div><span class="muted small">${all.length}명</span></div>
     <div class="searchbox">${I.search}<input class="input" id="memq" placeholder="이름·연락처 검색" value="${esc(q)}"></div>
-    <div class="seg" style="margin-bottom:12px">${[['active', '활동'], ['guest', '용병'], ['off', '비활동'], ['all', '전체']].map(([k, l]) => `<button class="${ui.memFilter === k ? 'on' : ''}" data-act="memf" data-v="${k}">${l} ${n(k)}</button>`).join('')}</div>
+    <div class="seg" style="margin-bottom:12px">${[['active', '활동'], ['off', '비활동'], ['all', '전체']].map(([k, l]) => `<button class="${ui.memFilter === k ? 'on' : ''}" data-act="memf" data-v="${k}">${l} ${n(k)}</button>`).join('')}</div>
     <div class="card list">${list.map(m => `
       <div class="mem ${m.active ? '' : 'off'}">
         <button class="row grow" style="text-align:left;gap:12px" data-act="openMember" data-v="${m.id}">
