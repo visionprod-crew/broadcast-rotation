@@ -241,8 +241,10 @@ const member = id => D().members[id];
 // 용병은 명단에 넣지 않고 'g:이름' 형태로 로테이션에 바로 저장
 const GUEST = 'g:';
 const isGuest = id => typeof id === 'string' && id.startsWith(GUEST);
-const nameOf = id => id ? (isGuest(id) ? id.slice(GUEST.length) : (member(id)?.name || '(삭제된 팀원)')) : '';
-const cardName = id => isGuest(id) ? `${nameOf(id)}(용병)` : nameOf(id);
+const guestName = id => id.slice(GUEST.length);
+// 화면·이미지·텍스트·CSV 어디서나 용병은 '이름(용병)'으로 표시
+const nameOf = id => id ? (isGuest(id) ? `${guestName(id)}(용병)` : (member(id)?.name || '(삭제된 팀원)')) : '';
+const cardName = nameOf;
 function recentGuests() {
   const seen = new Map();
   Object.values(D().rotations).sort((a, b) => b.date.localeCompare(a.date)).forEach(r => [...SLOTS.map(s => r[s.k]), ...(r.spare || []), ...(r.absent || [])].forEach(id => { if (isGuest(id) && !seen.has(id)) seen.set(id, r.date); }));
@@ -566,7 +568,7 @@ function renderEditorBody() {
   const { msgs, bad } = issues(draft);
   box.innerHTML = `
     <button class="btn block ghost" id="edAn" style="margin-bottom:10px">${I.chart}팀원 로테이션 분석 보기 (최근 · 1개월 · 3개월)</button>
-    ${SLOTS.map(s => { const id = draft[s.k]; return `<button class="slot ${id && bad.has(id) ? 'warn' : ''}" data-slot="${s.k}"><div class="lbl"><b>${s.cam}</b><i>${s.pos || (s.k === 'text' ? '자막' : '프로듀서')}${s.optional ? ' · 선택' : ''}</i></div><div class="v ${id ? '' : 'none'}">${id ? esc(nameOf(id)) + (isGuest(id) ? ' <span class="chip tag">용병</span>' : '') : '선택 안 함'}</div><span class="chev">${I.chev}</span></button>`; }).join('')}
+    ${SLOTS.map(s => { const id = draft[s.k]; return `<button class="slot ${id && bad.has(id) ? 'warn' : ''}" data-slot="${s.k}"><div class="lbl"><b>${s.cam}</b><i>${s.pos || (s.k === 'text' ? '자막' : '프로듀서')}${s.optional ? ' · 선택' : ''}</i></div><div class="v ${id ? '' : 'none'}">${id ? esc(nameOf(id)) : '선택 안 함'}</div><span class="chev">${I.chev}</span></button>`; }).join('')}
     ${MULTI.map(mm => { const ids = draft[mm.k] || []; return `<button class="slot" data-slot="${mm.k}"><div class="lbl"><b>${mm.label}</b><i>여러 명 선택</i></div><div class="v ${ids.length ? '' : 'none'}">${ids.length ? ids.map(id => `<span class="chip ${mm.k === 'absent' ? 'absent' : 'spare'}">${esc(nameOf(id))}</span>`).join('') : '없음'}</div><span class="chev">${I.chev}</span></button>`; }).join('')}
     <label class="f">메모 (선택)</label><input class="input" id="memo" placeholder="예: 성탄 특별예배, 장비 점검 등" value="${esc(draft.memo || '')}">
     ${msgs.length ? `<div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:6px">${msgs.map(t => `<span class="chip warn">⚠︎ ${esc(t)}</span>`).join('')}</div>` : ''}`;
@@ -634,7 +636,7 @@ function openPicker(k) {
       else { draft[k] = id; closeSheet(el); renderEditorBody(); }
     });
     const gs = [...new Set([...(multi ? sel : [sel]).filter(isGuest), ...recentGuests()])];
-    $('#guestChips', el).innerHTML = gs.length ? gs.map(g => { const on = multi ? sel.includes(g) : sel === g; return `<button class="chip ${on ? 'spare' : ''}" data-g="${esc(g)}" style="padding:6px 12px;font-size:13.5px">${on ? '✓ ' : ''}${esc(nameOf(g))}</button>`; }).join('') : '';
+    $('#guestChips', el).innerHTML = gs.length ? gs.map(g => { const on = multi ? sel.includes(g) : sel === g; return `<button class="chip ${on ? 'spare' : ''}" data-g="${esc(g)}" style="padding:6px 12px;font-size:13.5px">${on ? '✓ ' : ''}${esc(guestName(g))}</button>`; }).join('') : '';
     $('#guestChips', el).querySelectorAll('[data-g]').forEach(b => b.onclick = () => pickGuest(b.dataset.g, true));
   };
   const pickGuest = (g, toggle) => {
