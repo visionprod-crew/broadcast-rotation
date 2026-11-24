@@ -18,6 +18,12 @@ service cloud.firestore {
     match /rotations/{date} { allow read: if isViewer(); allow write: if isStaff(); }   // 팀원은 보기만
     match /members/{id}     { allow read: if isViewer(); allow write: if isLeader(); }
     match /settings/{id}    { allow read: if isViewer(); allow write: if isOwner(); }
+    match /pushSubs/{id} {                                                              // 폰 알림 구독 (기기별)
+      allow read: if isStaff() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow create, update: if isViewer() && request.resource.data.uid == request.auth.uid;
+      allow delete: if isStaff() || (signedIn() && resource.data.uid == request.auth.uid);
+    }
+    match /secrets/{id} { allow read: if isStaff(); allow write: if isOwner(); }       // 푸시 서명 키
     match /acks/{id} {                                                                  // 포지션 알림 '확인했어요'
       allow read: if isViewer();
       allow create, update: if isViewer() && request.resource.data.uid == request.auth.uid;

@@ -226,6 +226,17 @@ class FirebaseStore {
   async saveMember(m) { await this.F.setDoc(this.F.doc(this.db, 'members', m.id), this._clean(m)); }
   async deleteMember(id) { await this.F.deleteDoc(this.F.doc(this.db, 'members', id)); }
   async saveSettings(s) { await this.F.setDoc(this.F.doc(this.db, 'settings', 'main'), this._clean({ ...this.data.settings, ...s })); }
+  async idToken() { return this.auth.currentUser.getIdToken(); }
+  async savePushSub(id, data) { await this.F.setDoc(this.F.doc(this.db, 'pushSubs', id), this._clean(data)); }
+  async deletePushSub(id) { try { await this.F.deleteDoc(this.F.doc(this.db, 'pushSubs', id)); } catch {} }
+  async listPushSubs(memberIds) {
+    const out = [];
+    for (let i = 0; i < memberIds.length; i += 30) {
+      const q = this.F.query(this.F.collection(this.db, 'pushSubs'), this.F.where('memberId', 'in', memberIds.slice(i, i + 30)));
+      (await this.F.getDocs(q)).forEach(d => out.push({ id: d.id, ...d.data() }));
+    }
+    return out;
+  }
   async saveAck(date, memberId) {
     try { await this.F.setDoc(this.F.doc(this.db, 'acks', `${date}_${memberId}`), { date, memberId, uid: this.user.uid, at: Date.now() }); }
     catch (e) { throw new Error(e.code === 'permission-denied' ? '확인 기능 권한이 아직 설정되지 않았어요 (관리자: Firebase 보안 규칙 업데이트 필요)' : e.message); }
@@ -314,6 +325,9 @@ function smsHref(nums, body) {
 }
 function noticeText(r) { return `${weekText(r)}\n\n앱에서 내 포지션을 확인하고 '확인했어요'를 눌러주세요 👉 ${location.origin + location.pathname}`; }
 function myBannerHTML() {
+  return pushBannerHTML() + myNextHTML();
+}
+function myNextHTML() {
   const me = myMemberId(); if (!me) return '';
   const today = todayISO();
   const r = Object.values(D().rotations).filter(x => x.date >= today && (positionsOf(x, me).length || (x.spare || []).includes(me))).sort((a, b) => a.date.localeCompare(b.date))[0];
@@ -325,9 +339,84 @@ function myBannerHTML() {
     ${ack ? `<span class="chip spare">✓ 확인함</span>` : r.notifiedAt ? `<button class="btn sm primary" data-act="ack" data-v="${r.date}">확인했어요</button>` : ''}
   </div>`;
 }
+/* ── 웹 푸시 (아이폰: 홈 화면 앱, 갤럭시: 크롬) ── */
+const PUSH = {
+  configured: () => store.mode === 'cloud' && !!CFG.vapidPublicKey && !!CFG.pushApi,
+  supported: () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window,
+  isIOS: () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1),
+  standalone: () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true,
+  state() {
+    if (!this.configured()) return 'off';
+    if (!this.supported()) return this.isIOS() && !this.standalone() ? 'ios-home' : 'unsupported';
+    if (Notification.permission === 'denied') return 'denied';
+    return lsGet('vfc-rotation:pushOn', false) && Notification.permission === 'granted' ? 'on' : 'ready';
+  },
+};
+let swReg = null;
+async function getSW() {
+  if (swReg) return swReg;
+  swReg = await navigator.serviceWorker.register('sw.js'); await navigator.serviceWorker.ready; return swReg;
+}
+async function subId(endpoint) { return (await sha(endpoint)).slice(0, 32); }
+async function enablePush() {
+  try {
+    const st = PUSH.state();
+    if (st === 'ios-home') return openIosGuide();
+    if (st === 'unsupported') return toast('이 브라우저는 푸시 알림을 지원하지 않아요');
+    if (st === 'denied') return toast('알림이 차단돼 있어요. 휴대폰 설정에서 이 앱 알림을 허용해 주세요');
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') return toast('알림을 허용해야 받을 수 있어요');
+    const reg = await getSW();
+    const key = Uint8Array.from(atob(CFG.vapidPublicKey.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+    const j = sub.toJSON();
+    await store.savePushSub(await subId(j.endpoint), { uid: store.user.uid, memberId: myMemberId(), name: store.user.name, endpoint: j.endpoint, keys: j.keys, device: PUSH.isIOS() ? 'iPhone' : /Android/.test(navigator.userAgent) ? 'Android' : 'PC', at: Date.now() });
+    lsSet('vfc-rotation:pushOn', true); toast('이 기기에서 알림을 받아요 🔔'); rerender();
+  } catch (e) { console.error(e); toast('알림 켜기 실패: ' + (e.message || e)); }
+}
+async function disablePush() {
+  try {
+    const reg = await getSW(), sub = await reg.pushManager.getSubscription();
+    if (sub) { await store.deletePushSub(await subId(sub.endpoint)); await sub.unsubscribe(); }
+  } catch {}
+  lsSet('vfc-rotation:pushOn', false); toast('이 기기 알림을 껐어요'); rerender();
+}
+function openIosGuide() {
+  openSheet({ title: '아이폰에서 알림 받기', body: `<ol style="margin:0;padding-left:20px;line-height:1.9;font-size:15px">
+    <li>사파리 아래쪽 <b>공유 버튼</b>(□↑)을 눌러요</li><li><b>홈 화면에 추가</b>를 눌러요</li>
+    <li>홈 화면에 생긴 <b>SLS 방송팀</b> 아이콘으로 앱을 열어요</li><li>로그인 후 <b>알림 켜기</b>를 누르고 <b>허용</b>을 눌러요</li></ol>
+    <p class="muted small" style="margin-top:12px">iOS 16.4 이상에서 지원돼요. 사파리 탭에서는 아이폰 정책상 알림을 받을 수 없어요.</p>` });
+}
+function pushBannerHTML() {
+  const st = PUSH.state();
+  if (!['ready', 'ios-home'].includes(st) || lsGet('vfc-rotation:pushHide', false)) return '';
+  return `<div class="card pushbanner"><div class="grow"><b>📲 포지션 알림을 폰으로 받아보세요</b><div class="small muted">${st === 'ios-home' ? '아이폰은 홈 화면에 추가한 앱에서 켤 수 있어요' : '배정되면 잠금화면으로 알려드려요'}</div></div>
+    <button class="btn sm primary" data-act="pushOn">${st === 'ios-home' ? '방법 보기' : '알림 켜기'}</button><button class="iconbtn" data-act="pushHide" aria-label="닫기" style="width:30px;height:30px;border:0;background:none">${I.x}</button></div>`;
+}
+async function sendPositionPush(r, ids) {
+  if (!PUSH.configured()) return { sent: 0, none: true };
+  const subs = await store.listPushSubs(ids);
+  if (!subs.length) return { sent: 0, subs: 0 };
+  const url = location.origin + location.pathname;
+  const items = subs.map(s => {
+    const ps = positionsOf(r, s.memberId);
+    return { sub: { endpoint: s.endpoint, keys: s.keys }, payload: { title: `📣 ${dotDate(r.date).slice(5)}(${dow(r.date)}) 포지션 알림`, body: `${member(s.memberId)?.name || ''}님 · ${ps.length ? ps.join(', ') : '예비/휴가'}\n앱에서 '확인했어요'를 눌러주세요`, url, tag: 'pos-' + r.date } };
+  });
+  const res = await fetch(CFG.pushApi, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + await store.idToken() }, body: JSON.stringify({ items }) });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error || res.status);
+  const gone = (j.results || []).filter(x => x.gone).map(x => subs.find(s => s.endpoint === x.endpoint)?.id).filter(Boolean);
+  for (const id of gone) await store.deletePushSub(id);
+  const okMembers = new Set((j.results || []).filter(x => x.ok).map(x => subs.find(s => s.endpoint === x.endpoint)?.memberId));
+  return { sent: okMembers.size, subs: subs.length, failed: (j.results || []).filter(x => !x.ok && !x.gone).length };
+}
+
 function openNotify(date) {
   let withSpare = false;
   const el = openSheet({ title: `${dotDate(date).slice(5)}(${dow(date)}) 포지션 알림`, body: '<div id="ntBody"></div>', wide: true });
+  let subMembers = null;
+  const loadSubs = async () => { if (!PUSH.configured()) return; try { subMembers = new Set((await store.listPushSubs(notifyTargets(D().rotations[date], true))).map(s => s.memberId)); draw(); } catch (e) { console.warn(e); } };
   const draw = () => {
     const r = D().rotations[date]; if (!r) return;
     const ids = notifyTargets(r, withSpare);
@@ -338,7 +427,7 @@ function openNotify(date) {
       <div class="banner" style="margin-bottom:12px">${r.notifiedAt ? `<b>앱 알림 보냄</b> · ${fmtTime(r.notifiedAt)}${r.notifiedBy ? ` · ${esc(r.notifiedBy)}` : ''}<br>확인 <b>${acked}</b> / ${ids.length}명` : '아직 앱 알림을 보내지 않았어요. 보내면 대상자가 앱에 들어왔을 때 내 포지션과 <b>확인했어요</b> 버튼이 보여요.'}</div>
       <label class="switch" style="margin:0 0 10px"><div><b>예비/휴가 인원도 포함</b></div><button type="button" class="tgl ${withSpare ? 'on' : ''}" id="ntSp"></button></label>
       <div class="card list">${ids.map(id => { const m = member(id), a = ackOf(r, id), ps = positionsOf(r, id); return `<div class="li" style="padding:11px 14px">
-        <div class="grow"><b>${esc(m.name)}</b> <span class="muted small">${ps.length ? ps.map(esc).join(', ') : '예비/휴가'}</span><div class="d">${m.phone ? esc(m.phone) : '<span style="color:var(--danger)">연락처 없음</span>'}</div></div>
+        <div class="grow"><b>${esc(m.name)}</b>${subMembers ? (subMembers.has(id) ? ' <span title="폰 알림 켜짐">📲</span>' : ' <span class="muted small" title="폰 알림 꺼짐">· 폰알림 X</span>') : ''} <span class="muted small">${ps.length ? ps.map(esc).join(', ') : '예비/휴가'}</span><div class="d">${m.phone ? esc(m.phone) : '<span style="color:var(--danger)">연락처 없음</span>'}</div></div>
         ${a ? `<span class="chip spare">✓ ${fmtTime(a.at)}</span>` : r.notifiedAt ? '<span class="chip">미확인</span>' : ''}
       </div>`; }).join('') || '<div class="empty">포지션에 배정된 팀원이 없어요</div>'}</div>
       <div style="display:grid;gap:8px;margin-top:14px">
@@ -347,17 +436,25 @@ function openNotify(date) {
         <button class="btn kakao" id="ntKakao" style="height:48px">${I.kakao}카톡 단톡방용 문구 복사</button>
       </div>
       ${noPhone.length ? `<p class="muted small" style="margin:10px 2px 0">연락처가 없어 문자에서 빠지는 사람: ${noPhone.map(esc).join(', ')}</p>` : ''}
-      <p class="muted small" style="margin:8px 2px 0">단체 문자는 휴대폰의 문자 앱이 열리고, 보내기는 직접 눌러야 해요.</p>`;
+      <p class="muted small" style="margin:8px 2px 0">${PUSH.configured() ? '앱 알림은 📲 표시가 있는 사람(폰 알림을 켠 사람)에게 아이폰·갤럭시 알림으로도 가요. ' : ''}단체 문자는 휴대폰의 문자 앱이 열리고, 보내기는 직접 눌러야 해요.</p>`;
     $('#ntSp', el).onclick = () => { withSpare = !withSpare; draw(); };
     $('#ntApp', el).onclick = async () => {
-      try { await store.saveRotation({ ...clone(r), notifiedAt: Date.now(), notifiedBy: store.user.name }); toast('앱 알림을 보냈어요'); draw(); } catch (e) { toast('실패: ' + e.message); }
+      const btn = $('#ntApp', el); btn.disabled = true; btn.textContent = '보내는 중…';
+      try {
+        await store.saveRotation({ ...clone(r), notifiedAt: Date.now(), notifiedBy: store.user.name });
+        let msg = '앱 알림을 보냈어요';
+        try { const p = await sendPositionPush(r, ids); if (!p.none) msg += ` · 폰 알림 ${p.sent}명${p.failed ? ` (실패 ${p.failed})` : ''}`; }
+        catch (e) { msg += ` · 폰 알림 실패: ${e.message}`; }
+        toast(msg); loadSubs();
+      } catch (e) { toast('실패: ' + e.message); }
+      draw();
     };
     $('#ntKakao', el).onclick = () => {
       const t = `${ids.map(id => '@' + member(id).name).join(' ')}\n${noticeText(r)}`;
       copyText(t, '복사했어요. 단톡방에 붙여넣기 하세요');
     };
   };
-  draw();
+  draw(); loadSubs();
   const off = () => draw(); store.subscribe(off); el._onClose = () => store.listeners.delete(off);
 }
 
@@ -1057,6 +1154,10 @@ function renderSettings() {
   const li = (act, ic, title, desc, extra = '') => `<button class="li" data-act="${act}" ${extra}><span class="ic">${ic}</span><div class="grow"><b>${title}</b>${desc ? `<div class="d">${desc}</div>` : ''}</div><span class="muted">${I.chev}</span></button>`;
   return `
     <div style="font-size:22px;font-weight:800;letter-spacing:-.02em;margin:6px 0 4px">설정</div>
+    ${PUSH.configured() ? (() => { const st = PUSH.state(); const desc = { on: '이 기기에서 포지션 알림을 받고 있어요', ready: '켜면 포지션이 배정됐을 때 잠금화면으로 알려드려요', 'ios-home': '아이폰은 홈 화면에 추가한 앱에서 켤 수 있어요', denied: '알림이 차단됨 · 휴대폰 설정에서 허용해 주세요', unsupported: '이 브라우저는 푸시 알림을 지원하지 않아요' }[st];
+      return `<div class="section-title">이 기기 알림</div><div class="card list"><div class="li"><span class="ic">${I.bell}</span><div class="grow"><b>포지션 알림 ${st === 'on' ? '켜짐' : '꺼짐'}</b><div class="d">${desc}</div></div>
+        ${st === 'on' ? `<button class="btn sm" data-act="pushOff">끄기</button>` : st === 'ready' ? `<button class="btn sm primary" data-act="pushOn">켜기</button>` : st === 'ios-home' ? `<button class="btn sm" data-act="pushOn">방법</button>` : ''}</div>
+        ${st === 'on' && can.editRotation() ? `<button class="li" data-act="pushTest"><span class="ic">${I.share}</span><div class="grow"><b>나에게 테스트 알림 보내기</b></div><span class="muted">${I.chev}</span></button>` : ''}</div>`; })() : ''}
     <div class="section-title">내 계정</div>
     <div class="card list">
       <div class="li"><span class="ic">${I.user}</span><div class="grow"><b>${esc(u.name)}</b><div class="d">아이디 ${esc(u.loginId)} · ${ROLES[u.role]}</div></div></div>
@@ -1258,6 +1359,18 @@ const ACT = {
   openMember: v => openMemberEditor(v),
   memberAn: v => openMemberAnalysis(v),
   notify: v => openNotify(v),
+  pushOn: () => enablePush(),
+  pushOff: () => disablePush(),
+  pushHide: () => { lsSet('vfc-rotation:pushHide', true); rerender(); },
+  pushTest: async () => {
+    try {
+      const subs = (await store.listPushSubs([myMemberId()].filter(Boolean))).filter(s => s.uid === store.user.uid);
+      if (!subs.length) return toast('이 계정에 등록된 기기가 없어요');
+      const res = await fetch(CFG.pushApi, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + await store.idToken() }, body: JSON.stringify({ items: subs.map(s => ({ sub: { endpoint: s.endpoint, keys: s.keys }, payload: { title: '🔔 테스트 알림', body: 'SLS 방송팀 관리 시스템 알림이 잘 와요!', url: location.origin + location.pathname, tag: 'test' } })) }) });
+      const j = await res.json().catch(() => ({}));
+      toast(res.ok ? `테스트 알림 ${j.sent}건 보냈어요` : '실패: ' + (j.error || res.status));
+    } catch (e) { toast('실패: ' + e.message); }
+  },
   ack: async v => { const me = myMemberId(); if (!me) return toast('명단과 연결된 계정이 아니에요'); try { await store.saveAck(v, me); toast('확인했어요 👍'); } catch (e) { toast(e.message); } },
   addMember: () => openMemberEditor(null),
   me: () => { ui.tab = 'settings'; saveUI(); rerender(); },
@@ -1295,6 +1408,7 @@ document.addEventListener('input', e => {
     $('#app').innerHTML = `<div class="login"><div class="box"><h1>연결 오류</h1><p class="muted">Firebase에 연결하지 못했어요. config.js 설정과 인터넷 연결을 확인해 주세요.</p><pre class="small" style="white-space:pre-wrap">${esc(e.message)}</pre></div></div>`;
     return;
   }
+  if (PUSH.configured() && PUSH.supported()) getSW().catch(e => console.warn('sw', e));
   store.subscribe(() => {
     if (!store.user) return;
     const y = window.scrollY; rerender(); window.scrollTo(0, y);
