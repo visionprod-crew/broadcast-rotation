@@ -229,6 +229,7 @@ class FirebaseStore {
   async idToken() { return this.auth.currentUser.getIdToken(); }
   async savePushSub(id, data) { await this.F.setDoc(this.F.doc(this.db, 'pushSubs', id), this._clean(data)); }
   async deletePushSub(id) { try { await this.F.deleteDoc(this.F.doc(this.db, 'pushSubs', id)); } catch {} }
+  async listMySubs() { const q = this.F.query(this.F.collection(this.db, 'pushSubs'), this.F.where('uid', '==', this.user.uid)); return (await this.F.getDocs(q)).docs.map(d => ({ id: d.id, ...d.data() })); }
   async listPushSubs(memberIds) {
     const out = [];
     for (let i = 0; i < memberIds.length; i += 30) {
@@ -1364,7 +1365,7 @@ const ACT = {
   pushHide: () => { lsSet('vfc-rotation:pushHide', true); rerender(); },
   pushTest: async () => {
     try {
-      const subs = (await store.listPushSubs([myMemberId()].filter(Boolean))).filter(s => s.uid === store.user.uid);
+      const subs = await store.listMySubs();
       if (!subs.length) return toast('이 계정에 등록된 기기가 없어요');
       const res = await fetch(CFG.pushApi, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + await store.idToken() }, body: JSON.stringify({ items: subs.map(s => ({ sub: { endpoint: s.endpoint, keys: s.keys }, payload: { title: '🔔 테스트 알림', body: 'SLS 방송팀 관리 시스템 알림이 잘 와요!', url: location.origin + location.pathname, tag: 'test' } })) }) });
       const j = await res.json().catch(() => ({}));
