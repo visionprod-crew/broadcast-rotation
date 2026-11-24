@@ -14,7 +14,7 @@ window.APP_CONFIG = {
   // 아이폰·갤럭시 푸시 알림 (공개키 — 비밀키는 Firestore secrets/vapid 에만 저장)
   vapidPublicKey: 'BGYEmsGHSveBYEoagFLnIr8QUif8NUVuuD83GOtTI9tkJk0R2J5dpaKBU0JerZYnZo7iIdkG3V4aNWw9A8E1-pM',
   // 푸시 발송 서버 주소 (Vercel에 이 저장소를 연결하면 생기는 주소 + /api/push)
-  pushApi: '',
+  pushApi: 'https://broadcast-rotation.vercel.app/api/push',
 
   // Firebase 콘솔 > 프로젝트 설정 > 내 앱(웹) 에서 복사한 값으로 교체
   firebase: {
