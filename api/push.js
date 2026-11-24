@@ -75,7 +75,7 @@ module.exports = async (req, res) => {
   const me = await fsGet(`users/${claims.user_id}`, idToken);
   if (!me.ok) return res.status(403).json({ error: `권한 확인 실패 (${me.status})` });
   const isOwner = claims.email === OWNER_EMAIL || me.data.role === 'owner';
-  if (!isOwner && !['leader', 'subleader'].includes(me.data.role)) return res.status(403).json({ error: '팀장·부팀장만 알림을 보낼 수 있어요' });
+  if (!isOwner && !['pastor', 'leader', 'subleader'].includes(me.data.role)) return res.status(403).json({ error: '교역자·팀장·부팀장만 알림을 보낼 수 있어요' });
 
   const v = await fsGet('secrets/vapid', idToken);
   if (!v.ok || !v.data.privateKey) return res.status(500).json({ error: '알림 키가 설정되지 않았어요' });

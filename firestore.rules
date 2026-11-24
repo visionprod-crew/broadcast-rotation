@@ -7,9 +7,9 @@ service cloud.firestore {
     function isOwner() { return signedIn() && request.auth.token.email == 'admin@vfc-rotation.app'; }
     function hasProfile() { return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)); }
     function role() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role; }
-    function isViewer() { return isOwner() || (hasProfile() && role() in ['leader', 'subleader', 'member']); }
-    function isStaff() { return isOwner() || (hasProfile() && role() in ['leader', 'subleader']); }
-    function isLeader() { return isOwner() || (hasProfile() && role() == 'leader'); }
+    function isViewer() { return isOwner() || (hasProfile() && role() in ['pastor', 'leader', 'subleader', 'member']); }
+    function isStaff() { return isOwner() || (hasProfile() && role() in ['pastor', 'leader', 'subleader']); }
+    function isLeader() { return isOwner() || (hasProfile() && role() in ['pastor', 'leader']); }
 
     match /users/{uid} {
       allow read: if isOwner() || (signedIn() && request.auth.uid == uid);

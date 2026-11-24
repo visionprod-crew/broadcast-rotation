@@ -25,11 +25,12 @@ const SLOTS = [
 const MULTI = [{ k: 'spare', label: '예비/휴가' }, { k: 'absent', label: '불참' }];
 const ROLE_TAGS = ['PD', '메인', '3C', '4C', 'PTZ', 'Jib', '자막'];
 const MEMBER_TYPES = ['팀원', '사역자'];
-const ROLES = { owner: '메인 관리자', leader: '팀장', subleader: '부팀장', member: '팀원' };
-const ROLE_ORDER = ['owner', 'leader', 'subleader', 'member'];
+const ROLES = { owner: '메인 관리자', pastor: '교역자', leader: '팀장', subleader: '부팀장', member: '팀원' };
+const ROLE_ORDER = ['owner', 'pastor', 'leader', 'subleader', 'member'];
+const ROLE_OPTS = ['pastor', 'leader', 'subleader', 'member'];
 const can = {
-  editRotation: () => ['owner', 'leader', 'subleader'].includes(store.user?.role),
-  editMembers:  () => ['owner', 'leader'].includes(store.user?.role),
+  editRotation: () => ['owner', 'pastor', 'leader', 'subleader'].includes(store.user?.role),
+  editMembers:  () => ['owner', 'pastor', 'leader'].includes(store.user?.role),
   owner:        () => store.user?.role === 'owner',
 };
 const DEFAULT_SETTINGS = { teamName: '3시예배 방송팀', cardTitle: '3시 방송팀 포지션', footer: '' };
@@ -124,6 +125,7 @@ class LocalStore {
     this._persistUsers();
   }
   async deleteUser(id) { this.users = this.users.filter(u => u.uid !== id); this._persistUsers(); }
+  async setUserRole(id, role) { const u = this.users.find(x => x.uid === id); if (u) u.role = role; this._persistUsers(); if (this.user?.uid === id) this.user.role = role; }
   async resetPassword(id, pw) { const u = this.users.find(x => x.uid === id); u.hash = await sha(u.loginId + ':' + pw); this._persistUsers(); }
   async changePassword(oldPw, newPw) {
     const u = this.users.find(x => x.uid === this.user.uid);
@@ -212,6 +214,7 @@ class FirebaseStore {
     await this.A.signOut(sa);
   }
   async deleteUser(id) { await this.F.deleteDoc(this.F.doc(this.db, 'users', id)); }
+  async setUserRole(id, role) { await this.F.updateDoc(this.F.doc(this.db, 'users', id), { role }); }
   async changePassword(oldPw, newPw) {
     const u = this.auth.currentUser;
     try {
@@ -1169,7 +1172,7 @@ function renderSettings() {
     <div class="section-title">계정 관리 <span class="muted small" style="font-weight:600">메인 관리자 전용</span></div>
     <div class="card list" id="userList"><div class="li muted">불러오는 중…</div></div>
     <div class="row" style="margin-top:8px"><button class="btn grow" data-act="addUser">${I.plus}계정 만들기</button><button class="btn grow" data-act="bulkUsers">${I.people}명단에서 한 번에 만들기</button></div>
-    <div class="muted small" style="margin:8px 4px">권한 — <b>팀장</b>: 로테이션·팀원 편집, 알림 / <b>부팀장</b>: 로테이션 편집, 알림 / <b>팀원</b>: 보기만 가능, 내 포지션 확인</div>
+    <div class="muted small" style="margin:8px 4px">권한 — <b>교역자·팀장</b>: 로테이션·팀원 편집, 알림 / <b>부팀장</b>: 로테이션 편집, 알림 / <b>팀원</b>: 보기만 가능, 내 포지션 확인</div>
     <div class="section-title">공지 이미지 문구</div>
     <div class="card list">${li('editTexts', I.pen, '팀 이름 · 카드 제목 · 하단 문구', `${esc(st.teamName)} / ${esc(st.cardTitle)}${st.footer ? ' / ' + esc(st.footer) : ''}`)}</div>` : ''}
     ${can.editRotation() ? `<div class="section-title">데이터</div>
@@ -1185,12 +1188,19 @@ function renderSettings() {
     </div>
     <p class="muted small" style="text-align:center;margin:22px 0 4px">VISION FILM CREW · SLS 방송팀 관리 시스템</p>`;
 }
+async function changeUserRole(sel) {
+  const uid2 = sel.dataset.uid, role = sel.value, name = sel.closest('.li')?.querySelector('b')?.textContent || '';
+  if (!await confirmBox(`${name}님의 역할을 ${ROLES[role]}(으)로 바꿀까요?`, '변경')) { loadUserList(); return; }
+  try { await store.setUserRole(uid2, role); toast(`${ROLES[role]}(으)로 바꿨어요`); } catch (e) { toast('변경 실패: ' + e.message); }
+  loadUserList();
+}
 async function loadUserList() {
   const box = $('#userList'); if (!box) return;
   try {
     const users = (await store.listUsers()).sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role));
     box.innerHTML = users.map(u => `<div class="li"><span class="avatar" style="width:34px;height:34px;border-radius:10px">${esc((u.name || '?')[0])}</span><div class="grow"><b>${esc(u.name)}</b> <span class="role ${u.role}">${ROLES[u.role]}</span><div class="d">아이디 ${esc(u.loginId)}</div></div>
-      ${u.role !== 'owner' ? `${store.mode === 'local' ? `<button class="btn sm ghost" data-act="resetUserPw" data-v="${u.uid}">비번 초기화</button>` : ''}<button class="btn sm danger" data-act="delUser" data-v="${u.uid}" data-n="${esc(u.name)}">삭제</button>` : ''}</div>`).join('');
+      ${u.role !== 'owner' ? `<select class="input role-sel" data-uid="${u.uid}" style="height:34px;width:auto;padding:0 8px;font-size:13px">${ROLE_OPTS.map(r => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${ROLES[r]}</option>`).join('')}</select>${store.mode === 'local' ? `<button class="btn sm ghost" data-act="resetUserPw" data-v="${u.uid}">비번 초기화</button>` : ''}<button class="btn sm danger" data-act="delUser" data-v="${u.uid}" data-n="${esc(u.name)}">삭제</button>` : ''}</div>`).join('');
+      box.querySelectorAll('.role-sel').forEach(x => x.onchange = () => changeUserRole(x));
   } catch (e) { box.innerHTML = `<div class="li muted">계정 목록을 불러오지 못했어요 (${esc(e.message)})</div>`; }
 }
 async function openBulkUsers() {
@@ -1198,7 +1208,7 @@ async function openBulkUsers() {
   try { existing = await store.listUsers(); } catch {}
   const hasName = new Set(existing.map(u => u.name)), hasId = new Set(existing.map(u => u.loginId));
   const ms = membersSorted().filter(m => m.active);
-  const defRole = m => /부팀장/.test(m.note || '') ? 'subleader' : /팀장|강도사|전도사|목사/.test((m.note || '') + m.name) ? 'leader' : 'member';
+  const defRole = m => /강도사|전도사|목사|교역자/.test((m.note || '') + m.name) || m.type === '사역자' ? 'pastor' : /부팀장/.test(m.note || '') ? 'subleader' : /팀장/.test(m.note || '') ? 'leader' : 'member';
   const defOn = m => /팀장|부팀장/.test(m.note || '') || /강도사|전도사|목사/.test(m.name);
   const el = openSheet({
     title: '명단에서 계정 한 번에 만들기', wide: true,
@@ -1207,7 +1217,7 @@ async function openBulkUsers() {
         <input type="checkbox" class="bu-on" ${!done && defOn(m) ? 'checked' : ''} ${done ? 'disabled' : ''} style="width:20px;height:20px;flex:none">
         <div style="width:84px;flex:none;font-size:14px"><b>${esc(m.name)}</b><div class="d">${done ? '계정 있음' : esc(m.note || '')}</div></div>
         <input class="input bu-id" style="height:38px;flex:1;min-width:0;padding:0 8px;font-size:13.5px" value="${esc(m.name.replace(/\s.*$/, ''))}" autocapitalize="off" ${done ? 'disabled' : ''}>
-        <select class="input bu-role" style="height:38px;width:78px;flex:none;padding:0 6px;font-size:13.5px" ${done ? 'disabled' : ''}><option value="leader" ${defRole(m) === 'leader' ? 'selected' : ''}>팀장</option><option value="subleader" ${defRole(m) === 'subleader' ? 'selected' : ''}>부팀장</option><option value="member" ${defRole(m) === 'member' ? 'selected' : ''}>팀원</option></select>
+        <select class="input bu-role" style="height:38px;width:78px;flex:none;padding:0 6px;font-size:13.5px" ${done ? 'disabled' : ''}>${ROLE_OPTS.map(r => `<option value="${r}" ${defRole(m) === r ? 'selected' : ''}>${ROLES[r]}</option>`).join('')}</select>
       </div>`; }).join('')}</div>
       <label class="f">초기 비밀번호 (6자 이상, 모두 동일)</label><input class="input" id="buPw" type="text" autocomplete="off" placeholder="예: 123456">
       <div class="err" id="buErr"></div><div id="buLog" class="small muted"></div>`,
@@ -1238,7 +1248,7 @@ function openAddUser() {
   const el = openSheet({
     title: '계정 만들기',
     body: `
-      <label class="f">역할</label><div class="seg" id="uRole"><button type="button" class="on" data-v="leader">팀장</button><button type="button" data-v="subleader">부팀장</button><button type="button" data-v="member">팀원</button></div>
+      <label class="f">역할</label><div class="seg" id="uRole"><button type="button" data-v="pastor">교역자</button><button type="button" class="on" data-v="leader">팀장</button><button type="button" data-v="subleader">부팀장</button><button type="button" data-v="member">팀원</button></div>
       <label class="f">이름</label><input class="input" id="uName" placeholder="예: 김민" list="memNames">
       <datalist id="memNames">${membersSorted().filter(m => m.active).map(m => `<option value="${esc(m.name)}">`).join('')}</datalist>
       <label class="f">아이디 (한글·영문·숫자 2~20자)</label><input class="input" id="uId" autocapitalize="off" placeholder="예: 김민">
