@@ -327,7 +327,7 @@ function smsHref(nums, body) {
   const b = encodeURIComponent(body);
   return ios ? `sms:/open?addresses=${nums.join(',')}&body=${b}` : `sms:${nums.join(',')}?body=${b}`;
 }
-function noticeText(r) { return `${weekText(r)}\n\n앱에서 내 포지션을 확인하고 '확인했어요'를 눌러주세요 👉 ${location.origin + location.pathname}`; }
+function noticeText(r) { return `${weekText(r)}\n\n담당리더 ${store.user?.name || ''}\n앱에서 내 포지션을 확인하고 '확인했어요'를 눌러주세요 👉 ${location.origin + location.pathname}`; }
 function myBannerHTML() {
   return pushBannerHTML() + myNextHTML();
 }
@@ -339,7 +339,7 @@ function myNextHTML() {
   const ps = positionsOf(r, me), ack = ackOf(r, me);
   return `<div class="mybanner card">
     <div class="grow"><div class="small muted" style="font-weight:700">${r.notifiedAt ? '📣 포지션 알림' : '내 다음 일정'} · ${dotDate(r.date).slice(5)}(${dow(r.date)})</div>
-      <div class="mb-pos">${ps.length ? ps.map(esc).join(', ') : '예비/휴가'}</div></div>
+      <div class="mb-pos">${ps.length ? ps.map(esc).join(', ') : '예비/휴가'}</div>${r.notifiedAt && r.notifiedBy ? `<div class="small muted" style="margin-top:2px">담당리더 <b>${esc(r.notifiedBy)}</b></div>` : ''}</div>
     ${ack ? `<span class="chip spare">✓ 확인함</span>` : r.notifiedAt ? `<button class="btn sm primary" data-act="ack" data-v="${r.date}">확인했어요</button>` : ''}
   </div>`;
 }
@@ -405,7 +405,7 @@ async function sendPositionPush(r, ids) {
   const url = location.origin + location.pathname;
   const items = subs.map(s => {
     const ps = positionsOf(r, s.memberId);
-    return { sub: { endpoint: s.endpoint, keys: s.keys }, payload: { title: `📣 ${dotDate(r.date).slice(5)}(${dow(r.date)}) 포지션 알림`, body: `${member(s.memberId)?.name || ''}님 · ${ps.length ? ps.join(', ') : '예비/휴가'}\n앱에서 '확인했어요'를 눌러주세요`, url, tag: 'pos-' + r.date } };
+    return { sub: { endpoint: s.endpoint, keys: s.keys }, payload: { title: `📣 ${dotDate(r.date).slice(5)}(${dow(r.date)}) 포지션 알림`, body: `${member(s.memberId)?.name || ''}님 · ${ps.length ? ps.join(', ') : '예비/휴가'}\n담당리더 ${store.user.name} · 앱에서 '확인했어요'를 눌러주세요`, url, tag: 'pos-' + r.date } };
   });
   const res = await fetch(CFG.pushApi, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + await store.idToken() }, body: JSON.stringify({ items }) });
   const j = await res.json().catch(() => ({}));
