@@ -25,7 +25,8 @@ const SLOTS = [
 const MULTI = [{ k: 'spare', label: '예비/휴가' }, { k: 'absent', label: '불참' }];
 const ROLE_TAGS = ['PD', '메인', '3C', '4C', 'PTZ', 'Jib', '자막'];
 const MEMBER_TYPES = ['팀원', '사역자'];
-const ROLES = { owner: '메인 관리자', leader: '팀장', subleader: '부팀장' };
+const ROLES = { owner: '메인 관리자', leader: '팀장', subleader: '부팀장', member: '팀원' };
+const ROLE_ORDER = ['owner', 'leader', 'subleader', 'member'];
 const can = {
   editRotation: () => ['owner', 'leader', 'subleader'].includes(store.user?.role),
   editMembers:  () => ['owner', 'leader'].includes(store.user?.role),
@@ -117,9 +118,9 @@ class LocalStore {
   }
   async logout() { this.user = null; lsDel(LS_SESSION); }
   async listUsers() { return this.users.map(({ hash, ...u }) => u); }
-  async createUser({ loginId, pw, name, role }) {
+  async createUser({ loginId, pw, name, role, memberId = null }) {
     if (this.users.some(u => u.loginId === loginId)) throw new Error('이미 사용 중인 아이디예요');
-    this.users.push({ uid: uid('u_'), loginId, name, role, hash: await sha(loginId + ':' + pw), createdAt: Date.now() });
+    this.users.push({ uid: uid('u_'), loginId, name, role, memberId, hash: await sha(loginId + ':' + pw), createdAt: Date.now() });
     this._persistUsers();
   }
   async deleteUser(id) { this.users = this.users.filter(u => u.uid !== id); this._persistUsers(); }
@@ -136,13 +137,14 @@ class LocalStore {
   async saveMember(m) { this.data.members[m.id] = clone(m); this._save(); }
   async deleteMember(id) { delete this.data.members[id]; this._save(); }
   async saveSettings(s) { this.data.settings = { ...this.data.settings, ...s }; this._save(); }
-  async replaceAll(d) { this.data = clone(d); this._save(); }
+  async saveAck(date, memberId) { (this.data.acks ||= {})[`${date}_${memberId}`] = { date, memberId, uid: this.user.uid, at: Date.now() }; this._save(); }
+  async replaceAll(d) { this.data = { ...clone(d), acks: this.data.acks || {} }; this._save(); }
 }
 
 /* ───────── Firebase 저장소 (로그인 + 실시간 공유) ───────── */
 class FirebaseStore {
   mode = 'cloud'; listeners = new Set(); user = null; unsubs = []; ready = false;
-  data = { members: {}, rotations: {}, settings: { ...DEFAULT_SETTINGS } };
+  data = { members: {}, rotations: {}, settings: { ...DEFAULT_SETTINGS }, acks: {} };
   email(id) { return `${idToLocal(id)}@${DOMAIN}`; }
   async init() {
     const v = '10.12.5', base = `https://www.gstatic.com/firebasejs/${v}/`;
@@ -171,7 +173,7 @@ class FirebaseStore {
     const name = snap?.exists() ? snap.data().name : '메인 관리자';
     if (snap?.exists() && snap.data().loginId) loginId = snap.data().loginId;
     if (role === 'owner' && !snap?.exists()) await F.setDoc(ref, { loginId, name, role: 'owner', createdAt: Date.now() });
-    this.user = { uid: u.uid, loginId, name, role };
+    this.user = { uid: u.uid, loginId, name, role, memberId: snap?.exists() ? snap.data().memberId || null : null };
     this._listen();
   }
   _listen() {
@@ -179,6 +181,8 @@ class FirebaseStore {
     this.unsubs.push(F.onSnapshot(F.collection(db, 'members'), s => { const o = {}; s.forEach(d => o[d.id] = d.data()); this.data.members = o; done(); }, e => this._err(e)));
     this.unsubs.push(F.onSnapshot(F.collection(db, 'rotations'), s => { const o = {}; s.forEach(d => o[d.id] = d.data()); this.data.rotations = o; done(); }, e => this._err(e)));
     this.unsubs.push(F.onSnapshot(F.doc(db, 'settings', 'main'), s => { this.data.settings = { ...DEFAULT_SETTINGS, ...(s.data() || {}) }; done(); }, e => this._err(e)));
+    // 알림 확인 기록 (보안 규칙이 아직 없으면 조용히 건너뜀)
+    this.unsubs.push(F.onSnapshot(F.collection(db, 'acks'), s => { const o = {}; s.forEach(d => o[d.id] = d.data()); this.data.acks = o; this._emit(); }, e => console.warn('acks', e.code)));
   }
   _err(e) { console.error(e); toast('데이터를 불러오지 못했어요: ' + (e.code || e.message)); }
   _emit() { this.listeners.forEach(f => f()); }
@@ -200,11 +204,11 @@ class FirebaseStore {
   _waitUser() { return new Promise((res, rej) => { let n = 0; const t = setInterval(() => { if (this.user || this.authError || ++n > 60) { clearInterval(t); this.authError ? rej(new Error(this.authError)) : res(); } }, 100); }); }
   async logout() { await this.A.signOut(this.auth); this.user = null; }
   async listUsers() { const s = await this.F.getDocs(this.F.collection(this.db, 'users')); return s.docs.map(d => ({ uid: d.id, ...d.data() })); }
-  async createUser({ loginId, pw, name, role }) {
+  async createUser({ loginId, pw, name, role, memberId = null }) {
     this.sec ||= this.appM.initializeApp(CFG.firebase, 'secondary');
     const sa = this.A.getAuth(this.sec);
     let cred; try { cred = await this.A.createUserWithEmailAndPassword(sa, this.email(loginId), pw); } catch (e) { throw this._authMsg(e); }
-    await this.F.setDoc(this.F.doc(this.db, 'users', cred.user.uid), { loginId, name, role, createdAt: Date.now() });
+    await this.F.setDoc(this.F.doc(this.db, 'users', cred.user.uid), { loginId, name, role, memberId, createdAt: Date.now() });
     await this.A.signOut(sa);
   }
   async deleteUser(id) { await this.F.deleteDoc(this.F.doc(this.db, 'users', id)); }
@@ -222,6 +226,10 @@ class FirebaseStore {
   async saveMember(m) { await this.F.setDoc(this.F.doc(this.db, 'members', m.id), this._clean(m)); }
   async deleteMember(id) { await this.F.deleteDoc(this.F.doc(this.db, 'members', id)); }
   async saveSettings(s) { await this.F.setDoc(this.F.doc(this.db, 'settings', 'main'), this._clean({ ...this.data.settings, ...s })); }
+  async saveAck(date, memberId) {
+    try { await this.F.setDoc(this.F.doc(this.db, 'acks', `${date}_${memberId}`), { date, memberId, uid: this.user.uid, at: Date.now() }); }
+    catch (e) { throw new Error(e.code === 'permission-denied' ? '확인 기능 권한이 아직 설정되지 않았어요 (관리자: Firebase 보안 규칙 업데이트 필요)' : e.message); }
+  }
   async replaceAll(d) {
     const { F, db } = this; const ops = [];
     Object.keys(this.data.members).forEach(id => ops.push(b => b.delete(F.doc(db, 'members', id))));
@@ -278,6 +286,79 @@ function countsFor(rots) {
     (r.absent || []).forEach(id => (c[id] ||= { n: 0, ab: 0 }).ab++);
   });
   return c;
+}
+
+/* ───────── 내 계정 ↔ 명단 연결, 포지션 알림 ───────── */
+function myMemberId() {
+  const u = store.user; if (!u) return null;
+  if (u.memberId && member(u.memberId)) return u.memberId;
+  const ms = Object.values(D().members);
+  return (ms.find(m => m.name === u.name) || ms.find(m => m.name.replace(/\s.*$/, '') === u.name.replace(/\s.*$/, '')))?.id || null;
+}
+function memberIdByName(name) {
+  const ms = Object.values(D().members), n = String(name || '').trim();
+  return (ms.find(m => m.name === n) || ms.find(m => m.name.replace(/\s.*$/, '') === n.replace(/\s.*$/, '')))?.id || null;
+}
+function positionsOf(r, id) { return SLOTS.filter(s => r[s.k] === id).map(s => s.pos ? `${s.cam} · ${s.pos}` : s.cam); }
+function ackOf(r, id) { const a = D().acks?.[`${r.date}_${id}`]; return a && (!r.notifiedAt || a.at >= r.notifiedAt) ? a : null; }
+function notifyTargets(r, withSpare) {
+  const ids = []; SLOTS.forEach(s => { const id = r[s.k]; if (id && member(id) && !ids.includes(id)) ids.push(id); });
+  if (withSpare) (r.spare || []).forEach(id => { if (member(id) && !ids.includes(id)) ids.push(id); });
+  return ids;
+}
+const fmtTime = t => { const d = new Date(t); return `${pad(d.getMonth() + 1)}.${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+function smsHref(nums, body) {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  const b = encodeURIComponent(body);
+  return ios ? `sms:/open?addresses=${nums.join(',')}&body=${b}` : `sms:${nums.join(',')}?body=${b}`;
+}
+function noticeText(r) { return `${weekText(r)}\n\n앱에서 내 포지션을 확인하고 '확인했어요'를 눌러주세요 👉 ${location.origin + location.pathname}`; }
+function myBannerHTML() {
+  const me = myMemberId(); if (!me) return '';
+  const today = todayISO();
+  const r = Object.values(D().rotations).filter(x => x.date >= today && (positionsOf(x, me).length || (x.spare || []).includes(me))).sort((a, b) => a.date.localeCompare(b.date))[0];
+  if (!r) return '';
+  const ps = positionsOf(r, me), ack = ackOf(r, me);
+  return `<div class="mybanner card">
+    <div class="grow"><div class="small muted" style="font-weight:700">${r.notifiedAt ? '📣 포지션 알림' : '내 다음 일정'} · ${dotDate(r.date).slice(5)}(${dow(r.date)})</div>
+      <div class="mb-pos">${ps.length ? ps.map(esc).join(', ') : '예비/휴가'}</div></div>
+    ${ack ? `<span class="chip spare">✓ 확인함</span>` : r.notifiedAt ? `<button class="btn sm primary" data-act="ack" data-v="${r.date}">확인했어요</button>` : ''}
+  </div>`;
+}
+function openNotify(date) {
+  let withSpare = false;
+  const el = openSheet({ title: `${dotDate(date).slice(5)}(${dow(date)}) 포지션 알림`, body: '<div id="ntBody"></div>', wide: true });
+  const draw = () => {
+    const r = D().rotations[date]; if (!r) return;
+    const ids = notifyTargets(r, withSpare);
+    const acked = ids.filter(id => ackOf(r, id)).length;
+    const nums = ids.map(id => (member(id).phone || '').replace(/\D/g, '')).filter(Boolean);
+    const noPhone = ids.filter(id => !member(id).phone).map(id => member(id).name);
+    $('#ntBody', el).innerHTML = `
+      <div class="banner" style="margin-bottom:12px">${r.notifiedAt ? `<b>앱 알림 보냄</b> · ${fmtTime(r.notifiedAt)}${r.notifiedBy ? ` · ${esc(r.notifiedBy)}` : ''}<br>확인 <b>${acked}</b> / ${ids.length}명` : '아직 앱 알림을 보내지 않았어요. 보내면 대상자가 앱에 들어왔을 때 내 포지션과 <b>확인했어요</b> 버튼이 보여요.'}</div>
+      <label class="switch" style="margin:0 0 10px"><div><b>예비/휴가 인원도 포함</b></div><button type="button" class="tgl ${withSpare ? 'on' : ''}" id="ntSp"></button></label>
+      <div class="card list">${ids.map(id => { const m = member(id), a = ackOf(r, id), ps = positionsOf(r, id); return `<div class="li" style="padding:11px 14px">
+        <div class="grow"><b>${esc(m.name)}</b> <span class="muted small">${ps.length ? ps.map(esc).join(', ') : '예비/휴가'}</span><div class="d">${m.phone ? esc(m.phone) : '<span style="color:var(--danger)">연락처 없음</span>'}</div></div>
+        ${a ? `<span class="chip spare">✓ ${fmtTime(a.at)}</span>` : r.notifiedAt ? '<span class="chip">미확인</span>' : ''}
+      </div>`; }).join('') || '<div class="empty">포지션에 배정된 팀원이 없어요</div>'}</div>
+      <div style="display:grid;gap:8px;margin-top:14px">
+        <button class="btn primary" id="ntApp" style="height:48px">🔔 ${r.notifiedAt ? '앱 알림 다시 보내기 (확인 초기화)' : '앱 알림 보내기'}</button>
+        <a class="btn" id="ntSms" href="${smsHref(nums, noticeText(r))}" style="height:48px">💬 단체 문자 보내기 (${nums.length}명)</a>
+        <button class="btn kakao" id="ntKakao" style="height:48px">${I.kakao}카톡 단톡방용 문구 복사</button>
+      </div>
+      ${noPhone.length ? `<p class="muted small" style="margin:10px 2px 0">연락처가 없어 문자에서 빠지는 사람: ${noPhone.map(esc).join(', ')}</p>` : ''}
+      <p class="muted small" style="margin:8px 2px 0">단체 문자는 휴대폰의 문자 앱이 열리고, 보내기는 직접 눌러야 해요.</p>`;
+    $('#ntSp', el).onclick = () => { withSpare = !withSpare; draw(); };
+    $('#ntApp', el).onclick = async () => {
+      try { await store.saveRotation({ ...clone(r), notifiedAt: Date.now(), notifiedBy: store.user.name }); toast('앱 알림을 보냈어요'); draw(); } catch (e) { toast('실패: ' + e.message); }
+    };
+    $('#ntKakao', el).onclick = () => {
+      const t = `${ids.map(id => '@' + member(id).name).join(' ')}\n${noticeText(r)}`;
+      copyText(t, '복사했어요. 단톡방에 붙여넣기 하세요');
+    };
+  };
+  draw();
+  const off = () => draw(); store.subscribe(off); el._onClose = () => store.listeners.delete(off);
 }
 
 /* ───────── 팀원 로테이션 분석 ───────── */
@@ -434,6 +515,7 @@ const I = {
   logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h11"/></svg>',
   pen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/></svg>',
   text: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
+  bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>',
   chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
   grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>',
 };
@@ -568,7 +650,7 @@ function renderMonth() {
   const people = Object.keys(counts).filter(id => counts[id].n > 0).length;
   const missingSundays = sundaysOf(ui.ym).filter(d => !D().rotations[d]);
   const nextDate = rots.find(r => r.date >= today)?.date;
-  let html = `
+  let html = myBannerHTML() + `
     <div class="monthnav">
       <button class="iconbtn" data-act="ym" data-v="-1" aria-label="이전 달">${I.left}</button>
       <button class="title" data-act="ymPick"><small>${y}년</small>${Number(m)}월 로테이션</button>
@@ -600,10 +682,10 @@ function renderMonth() {
   return html;
 }
 function renderSvc(r, isNext, isPast) {
-  const { msgs, bad } = issues(r);
+  const { msgs, bad } = issues(r), me = myMemberId();
   const cells = SLOTS.filter(s => !(s.optional && !r[s.k])).map(s => {
     const id = r[s.k];
-    return `<div class="pos"><div class="lbl"><b>${s.pos || s.cam}</b><i>${s.pos ? s.cam : '&nbsp;'}</i></div><div class="nm ${id ? (bad.has(id) ? 'bad' : '') : 'none'}">${id ? esc(cardName(id)) : '-'}</div></div>`;
+    return `<div class="pos"><div class="lbl"><b>${s.pos || s.cam}</b><i>${s.pos ? s.cam : '&nbsp;'}</i></div><div class="nm ${id ? (bad.has(id) ? 'bad' : id === me ? 'me' : '') : 'none'}">${id ? esc(cardName(id)) : '-'}</div></div>`;
   });
   if (cells.length % 2) cells.push('<div class="pos"></div>');
   const chips = (ids, cls) => ids?.length ? ids.map(id => `<span class="chip ${cls}">${esc(nameOf(id))}</span>`).join('') : '<span class="muted small" style="padding-top:3px">없음</span>';
@@ -612,6 +694,7 @@ function renderSvc(r, isNext, isPast) {
       ${isNext ? '<span class="badge">이번 주</span>' : isPast ? '<span class="badge past">지남</span>' : ''}
       <div class="grow"></div>
       <button class="btn sm ghost" data-act="toWeek" data-v="${r.date}">${I.share}공지</button>
+      ${can.editRotation() && !isPast ? `<button class="btn sm ghost" data-act="notify" data-v="${r.date}" title="포지션 알림">${I.bell}${r.notifiedAt ? `<span class="small">${notifyTargets(r).filter(id => ackOf(r, id)).length}/${notifyTargets(r).length}</span>` : '알림'}</button>` : ''}
       ${can.editRotation() ? `<button class="btn sm" data-act="edit" data-v="${r.date}">${I.pen}편집</button>` : ''}
     </div>
     ${r.memo ? `<div class="memo">📌 ${esc(r.memo)}</div>` : ''}
@@ -746,7 +829,7 @@ function pickWeekDefault() {
 }
 function renderWeek() {
   ui.weekDate ||= pickWeekDefault();
-  if (!ui.weekDate) return `<div class="card empty">먼저 월별 로테이션을 입력해 주세요</div>`;
+  if (!ui.weekDate) return myBannerHTML() + `<div class="card empty">먼저 월별 로테이션을 입력해 주세요</div>`;
   const ym = ymOf(ui.weekDate);
   const rots = rotationsOfMonth(ym);
   const [y, m] = ym.split('-');
@@ -984,16 +1067,16 @@ function renderSettings() {
     <div class="section-title">계정 관리 <span class="muted small" style="font-weight:600">메인 관리자 전용</span></div>
     <div class="card list" id="userList"><div class="li muted">불러오는 중…</div></div>
     <div class="row" style="margin-top:8px"><button class="btn grow" data-act="addUser">${I.plus}계정 만들기</button><button class="btn grow" data-act="bulkUsers">${I.people}명단에서 한 번에 만들기</button></div>
-    <div class="muted small" style="margin:8px 4px">권한 — <b>팀장</b>: 로테이션·팀원 편집 / <b>부팀장</b>: 로테이션 편집, 팀원 보기</div>
+    <div class="muted small" style="margin:8px 4px">권한 — <b>팀장</b>: 로테이션·팀원 편집, 알림 / <b>부팀장</b>: 로테이션 편집, 알림 / <b>팀원</b>: 보기만 가능, 내 포지션 확인</div>
     <div class="section-title">공지 이미지 문구</div>
     <div class="card list">${li('editTexts', I.pen, '팀 이름 · 카드 제목 · 하단 문구', `${esc(st.teamName)} / ${esc(st.cardTitle)}${st.footer ? ' / ' + esc(st.footer) : ''}`)}</div>` : ''}
-    <div class="section-title">데이터</div>
+    ${can.editRotation() ? `<div class="section-title">데이터</div>
     <div class="card list">
       ${li('exportJson', I.down, '백업 파일 내보내기 (JSON)', '전체 데이터를 파일로 저장')}
       ${li('exportCsv', I.file, '시트 형식으로 내보내기 (CSV)', '엑셀·구글 시트에서 열 수 있어요')}
       ${can.owner() ? li('importJson', I.upload, '백업 파일 가져오기', '현재 데이터를 파일 내용으로 교체') : ''}
       ${can.owner() ? li('resetSeed', I.file, '기존 시트 데이터로 되돌리기', '2026.01~11 원본 로테이션 + 명단') : ''}
-    </div>
+    </div>` : ''}
     <div class="section-title">연결 상태</div>
     <div class="card" style="padding:14px;font-size:13.5px">
       ${store.mode === 'local' ? `<b>로컬 모드</b><div class="muted" style="margin-top:4px">데이터와 계정이 이 기기 브라우저에만 저장돼요. 팀장·부팀장이 각자 폰에서 같은 데이터를 쓰려면 README의 <b>Firebase 연결</b>을 진행해 주세요.</div>` : `<b>클라우드 모드 (Firebase)</b><div class="muted" style="margin-top:4px">모든 기기에서 같은 데이터가 실시간으로 공유돼요.</div>`}
@@ -1003,7 +1086,7 @@ function renderSettings() {
 async function loadUserList() {
   const box = $('#userList'); if (!box) return;
   try {
-    const users = (await store.listUsers()).sort((a, b) => ['owner', 'leader', 'subleader'].indexOf(a.role) - ['owner', 'leader', 'subleader'].indexOf(b.role));
+    const users = (await store.listUsers()).sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role));
     box.innerHTML = users.map(u => `<div class="li"><span class="avatar" style="width:34px;height:34px;border-radius:10px">${esc((u.name || '?')[0])}</span><div class="grow"><b>${esc(u.name)}</b> <span class="role ${u.role}">${ROLES[u.role]}</span><div class="d">아이디 ${esc(u.loginId)}</div></div>
       ${u.role !== 'owner' ? `${store.mode === 'local' ? `<button class="btn sm ghost" data-act="resetUserPw" data-v="${u.uid}">비번 초기화</button>` : ''}<button class="btn sm danger" data-act="delUser" data-v="${u.uid}" data-n="${esc(u.name)}">삭제</button>` : ''}</div>`).join('');
   } catch (e) { box.innerHTML = `<div class="li muted">계정 목록을 불러오지 못했어요 (${esc(e.message)})</div>`; }
@@ -1013,7 +1096,7 @@ async function openBulkUsers() {
   try { existing = await store.listUsers(); } catch {}
   const hasName = new Set(existing.map(u => u.name)), hasId = new Set(existing.map(u => u.loginId));
   const ms = membersSorted().filter(m => m.active);
-  const defRole = m => /부팀장/.test(m.note || '') ? 'subleader' : 'leader';
+  const defRole = m => /부팀장/.test(m.note || '') ? 'subleader' : /팀장|강도사|전도사|목사/.test((m.note || '') + m.name) ? 'leader' : 'member';
   const defOn = m => /팀장|부팀장/.test(m.note || '') || /강도사|전도사|목사/.test(m.name);
   const el = openSheet({
     title: '명단에서 계정 한 번에 만들기', wide: true,
@@ -1022,7 +1105,7 @@ async function openBulkUsers() {
         <input type="checkbox" class="bu-on" ${!done && defOn(m) ? 'checked' : ''} ${done ? 'disabled' : ''} style="width:20px;height:20px;flex:none">
         <div style="width:84px;flex:none;font-size:14px"><b>${esc(m.name)}</b><div class="d">${done ? '계정 있음' : esc(m.note || '')}</div></div>
         <input class="input bu-id" style="height:38px;flex:1;min-width:0;padding:0 8px;font-size:13.5px" value="${esc(m.name.replace(/\s.*$/, ''))}" autocapitalize="off" ${done ? 'disabled' : ''}>
-        <select class="input bu-role" style="height:38px;width:78px;flex:none;padding:0 6px;font-size:13.5px" ${done ? 'disabled' : ''}><option value="leader" ${defRole(m) === 'leader' ? 'selected' : ''}>팀장</option><option value="subleader" ${defRole(m) === 'subleader' ? 'selected' : ''}>부팀장</option></select>
+        <select class="input bu-role" style="height:38px;width:78px;flex:none;padding:0 6px;font-size:13.5px" ${done ? 'disabled' : ''}><option value="leader" ${defRole(m) === 'leader' ? 'selected' : ''}>팀장</option><option value="subleader" ${defRole(m) === 'subleader' ? 'selected' : ''}>부팀장</option><option value="member" ${defRole(m) === 'member' ? 'selected' : ''}>팀원</option></select>
       </div>`; }).join('')}</div>
       <label class="f">초기 비밀번호 (6자 이상, 모두 동일)</label><input class="input" id="buPw" type="text" autocomplete="off" placeholder="예: 123456">
       <div class="err" id="buErr"></div><div id="buLog" class="small muted"></div>`,
@@ -1032,7 +1115,7 @@ async function openBulkUsers() {
     const err = $('#buErr', el), log = $('#buLog', el); err.textContent = ''; log.innerHTML = '';
     const pw = $('#buPw', el).value;
     if (pw.length < 6) return err.textContent = '비밀번호는 6자 이상이어야 해요';
-    const rows = [...el.querySelectorAll('[data-mid]')].filter(r => r.querySelector('.bu-on').checked).map(r => ({ name: member(r.dataset.mid).name, loginId: normId(r.querySelector('.bu-id').value), role: r.querySelector('.bu-role').value }));
+    const rows = [...el.querySelectorAll('[data-mid]')].filter(r => r.querySelector('.bu-on').checked).map(r => ({ name: member(r.dataset.mid).name, memberId: r.dataset.mid, loginId: normId(r.querySelector('.bu-id').value), role: r.querySelector('.bu-role').value }));
     if (!rows.length) return err.textContent = '만들 사람을 체크해 주세요';
     const bad = rows.find(r => !ID_RE.test(r.loginId) || r.loginId === OWNER_ID || hasId.has(r.loginId));
     if (bad) return err.textContent = `${bad.name}: ${ID_RE.test(bad.loginId) ? '이미 쓰는 아이디예요' : ID_MSG}`;
@@ -1053,7 +1136,7 @@ function openAddUser() {
   const el = openSheet({
     title: '계정 만들기',
     body: `
-      <label class="f">역할</label><div class="seg" id="uRole"><button type="button" class="on" data-v="leader">팀장</button><button type="button" data-v="subleader">부팀장</button></div>
+      <label class="f">역할</label><div class="seg" id="uRole"><button type="button" class="on" data-v="leader">팀장</button><button type="button" data-v="subleader">부팀장</button><button type="button" data-v="member">팀원</button></div>
       <label class="f">이름</label><input class="input" id="uName" placeholder="예: 김민" list="memNames">
       <datalist id="memNames">${membersSorted().filter(m => m.active).map(m => `<option value="${esc(m.name)}">`).join('')}</datalist>
       <label class="f">아이디 (한글·영문·숫자 2~20자)</label><input class="input" id="uId" autocapitalize="off" placeholder="예: 김민">
@@ -1072,7 +1155,7 @@ function openAddUser() {
     if (loginId === OWNER_ID) return err.textContent = '관리자 아이디와 같을 수 없어요';
     if (pw.length < 6) return err.textContent = '비밀번호는 6자 이상이어야 해요';
     $('#uSave', el).disabled = true;
-    try { await store.createUser({ loginId, pw, name, role }); closeSheet(el); toast(`${ROLES[role]} 계정을 만들었어요`); loadUserList(); }
+    try { await store.createUser({ loginId, pw, name, role, memberId: memberIdByName(name) }); closeSheet(el); toast(`${ROLES[role]} 계정을 만들었어요`); loadUserList(); }
     catch (e) { err.textContent = e.message; $('#uSave', el).disabled = false; }
   };
 }
@@ -1174,6 +1257,8 @@ const ACT = {
   memf: v => { ui.memFilter = v; saveUI(); rerender(); },
   openMember: v => openMemberEditor(v),
   memberAn: v => openMemberAnalysis(v),
+  notify: v => openNotify(v),
+  ack: async v => { const me = myMemberId(); if (!me) return toast('명단과 연결된 계정이 아니에요'); try { await store.saveAck(v, me); toast('확인했어요 👍'); } catch (e) { toast(e.message); } },
   addMember: () => openMemberEditor(null),
   me: () => { ui.tab = 'settings'; saveUI(); rerender(); },
   changePw: () => openChangePw(),

@@ -1,21 +1,27 @@
 rules_version = '2';
-// 방송팀 로테이션 — Firestore 보안 규칙
-// ⚠️ 아래 OWNER 이메일은 config.js 의  ownerId@loginDomain  과 같아야 합니다. (기본: admin@vfc-rotation.app)
+// SLS 방송팀 관리 시스템 — Firestore 보안 규칙
+// ⚠️ OWNER 이메일은 config.js 의 ownerId@loginDomain 과 같아야 합니다. (기본: admin@vfc-rotation.app)
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
     function isOwner() { return signedIn() && request.auth.token.email == 'admin@vfc-rotation.app'; }
-    function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
     function hasProfile() { return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)); }
-    function isStaff() { return isOwner() || (hasProfile() && profile().role in ['leader', 'subleader']); }
-    function isLeader() { return isOwner() || (hasProfile() && profile().role == 'leader'); }
+    function role() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role; }
+    function isViewer() { return isOwner() || (hasProfile() && role() in ['leader', 'subleader', 'member']); }
+    function isStaff() { return isOwner() || (hasProfile() && role() in ['leader', 'subleader']); }
+    function isLeader() { return isOwner() || (hasProfile() && role() == 'leader'); }
 
     match /users/{uid} {
-      allow read: if isStaff() && (isOwner() || request.auth.uid == uid);
+      allow read: if isOwner() || (signedIn() && request.auth.uid == uid);
       allow write: if isOwner();
     }
-    match /rotations/{date} { allow read, write: if isStaff(); }   // 팀장·부팀장 편집
-    match /members/{id}     { allow read: if isStaff(); allow write: if isLeader(); } // 팀장 이상 편집
-    match /settings/{id}    { allow read: if isStaff(); allow write: if isOwner(); }
+    match /rotations/{date} { allow read: if isViewer(); allow write: if isStaff(); }   // 팀원은 보기만
+    match /members/{id}     { allow read: if isViewer(); allow write: if isLeader(); }
+    match /settings/{id}    { allow read: if isViewer(); allow write: if isOwner(); }
+    match /acks/{id} {                                                                  // 포지션 알림 '확인했어요'
+      allow read: if isViewer();
+      allow create, update: if isViewer() && request.resource.data.uid == request.auth.uid;
+      allow delete: if isStaff();
+    }
   }
 }
